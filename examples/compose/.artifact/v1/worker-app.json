@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "example",
+  "runtime": { "compatibility_date": "2026-07-14", "compatibility_flags": ["nodejs_compat"] },
+  "resources": [
+    { "binding": "DB", "kind": "d1" },
+    { "binding": "CACHE", "kind": "kv", "rebuildable": true },
+    { "binding": "EVENTS", "kind": "queue", "dead_letter": true },
+    { "binding": "ASSETS", "kind": "assets", "directory": "public", "not_found_handling": "single-page-application" }
+  ],
+  "vars": [
+    { "name": "PUBLIC_URL" },
+    { "name": "LOG_LEVEL", "optional": true, "default": "info" }
+  ],
+  "secrets": [
+    { "name": "API_KEY" },
+    { "name": "COOKIE_SECRET", "generate": { "bytes": 32, "encoding": "base64url" } }
+  ],
+  "workers": [
+    { "name": "api", "main": "dist/api.js", "crons": ["0 3 * * *"] },
+    { "name": "consumer", "main": "dist/consumer.js", "consumes": ["EVENTS"], "routable": false, "bindings": ["DB", "EVENTS"] }
+  ],
+  "migrations": { "binding": "DB", "directory": "migrations" }
+}

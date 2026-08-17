@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .artifact/
+!examples/**/.artifact/
+!examples/**/.artifact/**
 *.tfstate*
 .terraform/
 .terraform.lock.hcl

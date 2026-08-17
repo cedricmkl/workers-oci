@@ -1,0 +1,164 @@
+# Build a worker-app artifact and publish it.
+#
+# Call it from a repository that holds a Worker:
+#
+#   jobs:
+#     release:
+#       uses: cedricmkl/workers-oci/.github/workflows/release.yml@v0.1.0
+#       permissions:
+#         contents: read
+#         packages: write
+#       with:
+#         registry: ghcr.io
+#         repository: ${{ github.repository }}
+#
+# It writes the version and digest into the run summary, ready to paste into
+# whatever pins the release.
+
+name: release
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: Registry host, for example ghcr.io or 123.dkr.ecr.eu-central-1.amazonaws.com.
+        type: string
+        required: true
+      repository:
+        description: Repository path under the registry.
+        type: string
+        required: true
+      version:
+        description: Version to publish. Defaults to the tag that triggered the run.
+        type: string
+        default: ""
+      config:
+        description: Path to the config document.
+        type: string
+        default: worker-app.json
+      root:
+        description: Directory the document's paths are relative to.
+        type: string
+        default: "."
+      build-command:
+        description: Command that produces the bundle. Skipped when empty.
+        type: string
+        default: bun run build
+      install-command:
+        type: string
+        default: bun install --frozen-lockfile
+      also-tag:
+        description: Extra tags for the same manifest, space separated.
+        type: string
+        default: ""
+      workers-oci-version:
+        description: Version of the workers-oci CLI to run.
+        type: string
+        default: latest
+      environment:
+        type: string
+        default: ""
+    secrets:
+      registry-username:
+        description: Defaults to the GitHub actor, which is what ghcr.io expects.
+        required: false
+      registry-password:
+        description: Defaults to GITHUB_TOKEN, which is what ghcr.io expects.
+        required: false
+    outputs:
+      digest:
+        description: Manifest digest of the published artifact.
+        value: ${{ jobs.release.outputs.digest }}
+      version:
+        description: Version it was published under.
+        value: ${{ jobs.release.outputs.version }}
+      reference:
+        description: Full reference, tag and digest together.
+        value: ${{ jobs.release.outputs.reference }}
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      version: ${{ steps.version.outputs.version }}
+      reference: ${{ steps.push.outputs.reference }}
+
+    steps:
+      # Full history, because the artifact records the commit timestamp and two
+      # builds of one commit have to agree.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - id: version
+        run: |
+          version='${{ inputs.version }}'
+          if [ -z "$version" ]; then
+            version="${GITHUB_REF_NAME}"
+          fi
+          case "$GITHUB_REF" in
+            refs/tags/*) : ;;
+            *) if [ -z '${{ inputs.version }}' ]; then
+                 echo "::error::no version given and this run was not triggered by a tag"
+                 exit 1
+               fi ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - if: inputs.install-command != ''
+        run: ${{ inputs.install-command }}
+
+      - if: inputs.build-command != ''
+        run: ${{ inputs.build-command }}
+
+      - name: build the artifact
+        id: build
+        run: |
+          bunx --bun @cedricmkl/workers-oci@${{ inputs.workers-oci-version }} build \
+            --config '${{ inputs.config }}' \
+            --root '${{ inputs.root }}' \
+            --out .artifact \
+            --version '${{ steps.version.outputs.version }}' \
+            --source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+
+      - name: push
+        id: push
+        env:
+          WORKERS_OCI_REGISTRY_USER: ${{ secrets.registry-username || github.actor }}
+          WORKERS_OCI_REGISTRY_PASSWORD: ${{ secrets.registry-password || secrets.GITHUB_TOKEN }}
+        run: |
+          tags=""
+          for tag in ${{ inputs.also-tag }}; do
+            tags="$tags --tag $tag"
+          done
+
+          reference='${{ inputs.registry }}/${{ inputs.repository }}:${{ steps.version.outputs.version }}'
+          digest=$(bunx --bun @cedricmkl/workers-oci@${{ inputs.workers-oci-version }} push .artifact "$reference" $tags)
+
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "reference=$reference@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: summary
+        run: |
+          {
+            echo '## `${{ inputs.repository }}` ${{ steps.version.outputs.version }}'
+            echo
+            echo 'Pin this release with:'
+            echo
+            echo '```'
+            echo '${{ steps.push.outputs.reference }}'
+            echo '```'
+            echo
+            bunx --bun @cedricmkl/workers-oci@${{ inputs.workers-oci-version }} inspect .artifact \
+              | sed 's/^/    /'
+          } >> "$GITHUB_STEP_SUMMARY"

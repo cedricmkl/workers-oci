@@ -1,0 +1,122 @@
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import type { CredentialSource } from "./auth.js";
+import { parseReference } from "./reference.js";
+import { Registry } from "./registry.js";
+import { CONFIG_TYPE, type Manifest, type WorkerApp } from "./types.js";
+
+export type Inspection = {
+  readonly manifest: Manifest;
+  readonly digest: string | null;
+  readonly app: WorkerApp;
+};
+
+/** A reference reads from the registry; a path reads a directory `build` wrote. */
+export const inspect = async (target: string, credential?: CredentialSource): Promise<Inspection> => {
+  const local = (() => {
+    try {
+      const dir = resolve(target);
+      const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as Manifest;
+      const app = JSON.parse(readFileSync(join(dir, "config.json"), "utf8")) as WorkerApp;
+      return { manifest, app, digest: null };
+    } catch {
+      return null;
+    }
+  })();
+
+  if (local !== null) return local;
+
+  const ref = parseReference(target);
+  const registry = new Registry(ref.registry, credential);
+  const { manifest, digest } = await registry.pullManifest(ref.repository, ref.digest ?? ref.tag ?? "latest");
+
+  if (manifest.config.mediaType !== CONFIG_TYPE) {
+    throw new Error(`not a worker-app: the config blob is ${manifest.config.mediaType}`);
+  }
+
+  const blob = await registry.pullBlob(ref.repository, manifest.config.digest);
+  return { manifest, digest, app: JSON.parse(new TextDecoder().decode(blob)) as WorkerApp };
+};
+
+const bytes = (n: number): string =>
+  n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1024 / 1024).toFixed(1)} MiB`;
+
+export const describe = ({ manifest, digest, app }: Inspection): string => {
+  const lines: string[] = [];
+  const a = manifest.annotations ?? {};
+
+  lines.push(`${app.name}${a["org.opencontainers.image.version"] ? ` ${a["org.opencontainers.image.version"]}` : ""}`);
+  if (app.description !== undefined) lines.push(`  ${app.description}`);
+  lines.push("");
+
+  if (digest !== null) lines.push(`  digest       ${digest}`);
+  lines.push(`  created      ${a["org.opencontainers.image.created"] ?? "unknown"}`);
+  if (a["org.opencontainers.image.revision"] !== undefined) lines.push(`  revision     ${a["org.opencontainers.image.revision"]}`);
+  if (a["org.opencontainers.image.source"] !== undefined) lines.push(`  source       ${a["org.opencontainers.image.source"]}`);
+  lines.push(`  content      ${bytes(manifest.layers[0]?.size ?? 0)} compressed`);
+  lines.push(`  runtime      compatibility date ${app.runtime.compatibility_date}`);
+  if ((app.runtime.compatibility_flags ?? []).length > 0) {
+    lines.push(`               flags ${(app.runtime.compatibility_flags ?? []).join(", ")}`);
+  }
+  lines.push("");
+
+  lines.push("  workers");
+  for (const w of app.workers) {
+    const notes = [
+      w.crons !== undefined && w.crons.length > 0 ? `cron ${w.crons.join(", ")}` : null,
+      w.consumes !== undefined && w.consumes.length > 0 ? `consumes ${w.consumes.join(", ")}` : null,
+      w.routable === false ? "not routable" : null,
+    ].filter((n): n is string => n !== null);
+    lines.push(`    ${w.name.padEnd(16)} ${w.main}${notes.length > 0 ? `  (${notes.join("; ")})` : ""}`);
+  }
+
+  if ((app.resources ?? []).length > 0) {
+    lines.push("");
+    lines.push("  resources");
+    for (const r of app.resources ?? []) {
+      const notes = [
+        r.optional === true ? "optional" : null,
+        r.rebuildable === true ? "rebuildable" : null,
+        r.dead_letter === true ? "dead letter queue" : null,
+        r.directory !== undefined ? `from ${r.directory}` : null,
+      ].filter((n): n is string => n !== null);
+      lines.push(`    ${r.binding.padEnd(16)} ${r.kind}${notes.length > 0 ? `  (${notes.join("; ")})` : ""}`);
+    }
+  }
+
+  if ((app.vars ?? []).length > 0) {
+    lines.push("");
+    lines.push("  vars the deployment supplies");
+    for (const v of app.vars ?? []) {
+      const notes = [v.optional === true ? "optional" : null, v.default !== undefined ? `default ${v.default}` : null]
+        .filter((n): n is string => n !== null);
+      lines.push(`    ${v.name.padEnd(16)}${notes.length > 0 ? ` (${notes.join("; ")})` : ""}`);
+    }
+  }
+
+  if ((app.secrets ?? []).length > 0) {
+    lines.push("");
+    lines.push("  secrets the deployment supplies");
+    for (const s of app.secrets ?? []) {
+      const notes = [
+        s.optional === true ? "optional" : null,
+        s.generate !== undefined ? `generated, ${s.generate.bytes} bytes` : null,
+        s.one_of !== undefined ? `or one of ${s.one_of.join(", ")}` : null,
+      ].filter((n): n is string => n !== null);
+      lines.push(`    ${s.name.padEnd(16)}${notes.length > 0 ? ` (${notes.join("; ")})` : ""}`);
+    }
+  }
+
+  if (app.migrations !== undefined) {
+    lines.push("");
+    lines.push(`  migrations     ${app.migrations.directory}, applied to ${app.migrations.binding}`);
+  }
+  if (app.bootstrap !== undefined) {
+    lines.push(`  bootstrap      POST ${app.bootstrap.endpoint} on ${app.bootstrap.worker}`);
+    if ((app.bootstrap.env ?? []).length > 0) {
+      lines.push(`                 needs ${(app.bootstrap.env ?? []).join(", ")}`);
+    }
+  }
+
+  return `${lines.join("\n")}\n`;
+};

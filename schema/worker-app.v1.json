@@ -1,43 +1,86 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/cedricmkl/worker-app/schema/worker-app.v1.json",
+  "$id": "https://raw.githubusercontent.com/cedricmkl/workers-oci/main/schema/worker-app.v1.json",
   "title": "worker-app config document",
-  "description": "The document carried as the config blob of a worker-app OCI artifact. It describes what a build IS and what it NEEDS. It never describes where a particular deployment puts it.",
+  "description": "The document carried as the config blob of a worker-app OCI artifact. It describes what a build is and what it needs. Where a deployment puts it is decided elsewhere.",
   "type": "object",
-  "additionalProperties": false,
   "required": ["schema_version", "name", "runtime", "workers"],
 
-  "properties": {
-    "schema_version": {
-      "description": "Version of this document format, not of the application. The application's version is the OCI tag and the org.opencontainers.image.version annotation, so it is not repeated here.",
-      "const": 1
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "maxLength": 64
     },
-
-    "name": {
-      "description": "Identifies the application. Used as the default prefix when a deployment names resources automatically.",
+    "dnsName": {
       "type": "string",
       "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
     },
+    "contentPath": {
+      "description": "A path inside the content layer. Relative, forward slashes, no `..` segment, because an artifact is unpacked onto somebody else's disk.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^\\\\]+$"
+    }
+  },
 
-    "description": { "type": "string" },
+  "properties": {
+    "schema_version": {
+      "description": "Version of this document format, not of the application. The application's version is the OCI tag, mirrored into org.opencontainers.image.version.",
+      "const": 1
+    },
+
+    "features": {
+      "description": "Named extensions this artifact relies on. A deployer that does not recognise one must refuse rather than deploy a partial configuration. Present so the format can grow without every addition becoming a schema_version bump; unknown keys elsewhere are ignored, and anything that changes deploy behaviour is named here instead.",
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true,
+      "default": []
+    },
+
+    "name": {
+      "description": "Identifies the application. Used as the default script name and as the prefix when the artifact ships several workers.",
+      "$ref": "#/$defs/dnsName",
+      "maxLength": 54
+    },
+
+    "description": { "type": "string", "maxLength": 300 },
 
     "runtime": {
-      "description": "Facts about how this build was compiled. A deployment cannot override these, because changing them changes which APIs the code was built against.",
+      "description": "How this build was compiled and what the code needs from the platform. A deployment cannot override these: changing them changes which APIs the code was built against.",
       "type": "object",
-      "additionalProperties": false,
       "required": ["compatibility_date"],
       "properties": {
-        "compatibility_date": { "type": "string", "format": "date" },
+        "compatibility_date": {
+          "type": "string",
+          "format": "date",
+          "comment": "The pattern is not redundant. `format` is annotation-only in draft 2020-12 unless the format-assertion vocabulary is declared, so half of the validators in use ignore it.",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
         "compatibility_flags": {
           "type": "array",
           "items": { "type": "string" },
+          "uniqueItems": true,
           "default": []
+        },
+        "limits": {
+          "description": "A property of the code rather than of the deployment, which is why it lives here.",
+          "type": "object",
+          "properties": {
+            "cpu_ms": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "placement": {
+          "type": "object",
+          "properties": {
+            "mode": { "enum": ["smart"] }
+          }
         }
       }
     },
 
     "resources": {
-      "description": "Every stateful thing the code binds to. The build says which bindings exist and what kind each is; the deployment says which concrete database or bucket sits behind them.",
+      "description": "Everything the code binds to. The build says which bindings exist and what kind each is; the deployment says which concrete database or bucket sits behind them.",
       "type": "array",
       "default": [],
       "items": {
@@ -46,32 +89,77 @@
         "properties": {
           "binding": {
             "description": "The name the code reads off the environment.",
-            "type": "string",
-            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            "$ref": "#/$defs/identifier"
           },
-          "kind": { "enum": ["d1", "kv", "r2", "queue", "assets"] },
+          "kind": {
+            "enum": [
+              "d1",
+              "kv",
+              "r2",
+              "queue",
+              "assets",
+              "hyperdrive",
+              "vectorize",
+              "analytics_engine",
+              "ai",
+              "browser",
+              "version_metadata",
+              "ratelimit"
+            ]
+          },
+          "description": { "type": "string" },
           "optional": {
-            "description": "The code runs without it. A deployment may leave it unbound.",
+            "description": "The code runs without it, so a deployment may leave it unbound.",
             "type": "boolean",
             "default": false
           },
           "rebuildable": {
-            "description": "Losing the contents costs time and nothing else. Declared so a deployment can decide whether prevent_destroy is warranted, rather than guessing from the kind.",
+            "description": "Losing the contents costs time and nothing else. Declared so a deployment can decide whether to guard against replacement, rather than guessing from the kind.",
             "type": "boolean",
             "default": false
           }
         },
+
         "allOf": [
+          {
+            "comment": "A kind with no branch of its own would otherwise be completely unconstrained, since additionalProperties only consults the properties in its own schema object.",
+            "if": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "d1",
+                    "kv",
+                    "r2",
+                    "queue",
+                    "assets",
+                    "hyperdrive",
+                    "vectorize",
+                    "analytics_engine",
+                    "ai",
+                    "browser",
+                    "version_metadata",
+                    "ratelimit"
+                  ]
+                }
+              },
+              "required": ["kind"]
+            },
+            "else": false
+          },
           {
             "if": { "properties": { "kind": { "const": "queue" } }, "required": ["kind"] },
             "then": {
               "additionalProperties": false,
               "properties": {
-                "binding": true, "kind": true, "optional": true, "rebuildable": true,
-                "dead_letter": {
-                  "description": "Failures go to a second queue. The deployment names it.",
+                "binding": true,
+                "kind": true,
+                "description": true,
+                "optional": true,
+                "rebuildable": true,
+                "produces": {
+                  "description": "This app writes to the queue. A queue it only consumes from, filled by something else, sets this false.",
                   "type": "boolean",
-                  "default": false
+                  "default": true
                 }
               }
             }
@@ -82,20 +170,29 @@
               "required": ["directory"],
               "additionalProperties": false,
               "properties": {
-                "binding": true, "kind": true, "optional": true, "rebuildable": true,
-                "directory": {
-                  "description": "Path inside the content layer holding the files to upload.",
-                  "type": "string"
-                },
+                "binding": true,
+                "kind": true,
+                "description": true,
+                "optional": true,
+                "rebuildable": true,
+                "directory": { "$ref": "#/$defs/contentPath" },
                 "not_found_handling": {
                   "enum": ["none", "404-page", "single-page-application"],
                   "default": "none"
                 },
+                "html_handling": {
+                  "enum": [
+                    "auto-trailing-slash",
+                    "force-trailing-slash",
+                    "drop-trailing-slash",
+                    "none"
+                  ]
+                },
                 "run_worker_first": {
-                  "description": "true, false, or a list of path globs the Worker sees before the static handler does.",
+                  "description": "true, false, or path globs the Worker sees before the static handler does.",
                   "oneOf": [
                     { "type": "boolean" },
-                    { "type": "array", "items": { "type": "string" } }
+                    { "type": "array", "items": { "type": "string" }, "minItems": 1 }
                   ],
                   "default": false
                 }
@@ -103,13 +200,53 @@
             }
           },
           {
+            "if": { "properties": { "kind": { "const": "ratelimit" } }, "required": ["kind"] },
+            "then": {
+              "required": ["limit", "period"],
+              "additionalProperties": false,
+              "properties": {
+                "binding": true,
+                "kind": true,
+                "description": true,
+                "optional": true,
+                "rebuildable": true,
+                "limit": { "type": "integer", "minimum": 1 },
+                "period": {
+                  "description": "Seconds. Cloudflare accepts 10 or 60.",
+                  "enum": [10, 60]
+                }
+              }
+            }
+          },
+          {
+            "comment": "Kinds carrying nothing beyond the common fields. ai, browser and version_metadata need no deployment input at all.",
             "if": {
-              "properties": { "kind": { "enum": ["d1", "kv", "r2"] } },
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "d1",
+                    "kv",
+                    "r2",
+                    "hyperdrive",
+                    "vectorize",
+                    "analytics_engine",
+                    "ai",
+                    "browser",
+                    "version_metadata"
+                  ]
+                }
+              },
               "required": ["kind"]
             },
             "then": {
               "additionalProperties": false,
-              "properties": { "binding": true, "kind": true, "optional": true, "rebuildable": true }
+              "properties": {
+                "binding": true,
+                "kind": true,
+                "description": true,
+                "optional": true,
+                "rebuildable": true
+              }
             }
           }
         ]
@@ -117,7 +254,7 @@
     },
 
     "vars": {
-      "description": "Plain configuration the code reads. Values belong to the deployment, so only the names are here. A var the code reads and the deployment does not set is undefined at runtime, which is why declaring it is worth the line.",
+      "description": "Plain configuration the code reads. Values belong to the deployment, so only the names are here. A var the code reads and the deployment does not set is undefined at runtime, which is why declaring it earns the line.",
       "type": "array",
       "default": [],
       "items": {
@@ -125,10 +262,17 @@
         "additionalProperties": false,
         "required": ["name"],
         "properties": {
-          "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "name": { "$ref": "#/$defs/identifier" },
           "description": { "type": "string" },
+          "type": {
+            "description": "`json` uploads the value as a JSON binding, which is how a var carries an object or a list.",
+            "enum": ["string", "json"],
+            "default": "string"
+          },
           "optional": { "type": "boolean", "default": false },
-          "default": { "type": "string" }
+          "default": {
+            "description": "A build-time fallback, not a deployment value. An explicit value from the deployment always wins."
+          }
         }
       }
     },
@@ -142,11 +286,11 @@
         "additionalProperties": false,
         "required": ["name"],
         "properties": {
-          "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "name": { "$ref": "#/$defs/identifier" },
           "description": { "type": "string" },
           "optional": { "type": "boolean", "default": false },
           "generate": {
-            "description": "The deployment may create this rather than being given it. For values whose only property is that they are unguessable and consistent, where losing one costs live sessions and nothing else.",
+            "description": "The deployment may create this rather than being given it. For values whose only property is being unguessable and stable, where losing one costs live sessions and nothing else. A deployment keeps the value it created; changing `bytes` in a later artifact does not rotate an existing one.",
             "type": "object",
             "additionalProperties": false,
             "required": ["bytes"],
@@ -156,9 +300,10 @@
             }
           },
           "one_of": {
-            "description": "Alternative names that satisfy the same requirement. One credential in two shapes is a real state during a migration, and demanding both would make the migration impossible.",
+            "description": "Alternative names satisfying the same requirement. Supplying `name` OR any one of these is enough, and the worker sees whichever were supplied. One credential in two shapes is a real state during a migration, and demanding both would make the migration impossible.",
             "type": "array",
-            "items": { "type": "string" },
+            "items": { "$ref": "#/$defs/identifier" },
+            "uniqueItems": true,
             "minItems": 1
           }
         }
@@ -166,7 +311,7 @@
     },
 
     "workers": {
-      "description": "The scripts this artifact deploys. More than one is allowed: several scripts sharing one database and one release are one application, and splitting them across artifacts would let them drift apart.",
+      "description": "The scripts this artifact deploys. Several sharing one database and one release are one application, and splitting them across artifacts would let them drift apart.",
       "type": "array",
       "minItems": 1,
       "items": {
@@ -175,33 +320,75 @@
         "required": ["name", "main"],
         "properties": {
           "name": {
-            "description": "Suffix appended to the deployment's script name when there is more than one worker. A single worker takes the deployment's name unchanged.",
-            "type": "string",
-            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+            "description": "A worker whose name equals the app name takes the deployment's script name unchanged. Every other worker is deployed as `<script name>-<name>`. The rule does not depend on how many workers the artifact ships, so adding a second one never renames the first.",
+            "$ref": "#/$defs/dnsName",
+            "maxLength": 54
           },
           "main": {
             "description": "Entry module, relative to the content layer root. Already bundled: nothing rebuilds it at deploy time.",
-            "type": "string"
+            "$ref": "#/$defs/contentPath"
+          },
+          "modules": {
+            "description": "Everything besides the entry module the script needs uploaded: WebAssembly, text and data blobs, and the `_headers` and `_redirects` files, which Cloudflare takes as modules rather than as files in the assets directory. Chunks emitted next to the entry module are picked up without being listed.",
+            "type": "array",
+            "default": [],
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path"],
+              "properties": {
+                "path": { "$ref": "#/$defs/contentPath" },
+                "content_type": {
+                  "description": "Inferred from the extension when absent.",
+                  "type": "string"
+                }
+              }
+            }
           },
           "bindings": {
-            "description": "Which of the resources above this script binds. Omitted means all of them.",
+            "description": "Which of the resources above this script binds. Omitted means all of them; an empty list means none.",
             "type": "array",
-            "items": { "type": "string" }
+            "items": { "$ref": "#/$defs/identifier" },
+            "uniqueItems": true
           },
           "consumes": {
-            "description": "Queue bindings this script is a consumer of, as opposed to only producing to.",
+            "description": "Queues this script is a consumer of, as opposed to only producing to. A bare string binds with the platform defaults.",
             "type": "array",
-            "items": { "type": "string" },
-            "default": []
+            "uniqueItems": true,
+            "default": [],
+            "items": {
+              "oneOf": [
+                { "$ref": "#/$defs/identifier" },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["binding"],
+                  "properties": {
+                    "binding": { "$ref": "#/$defs/identifier" },
+                    "dead_letter": {
+                      "description": "Failures go to a second queue, which the deployment names. Declared per consumer rather than per queue, because two scripts reading one queue can legitimately differ.",
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "max_batch_size": { "type": "integer", "minimum": 1, "maximum": 100 },
+                    "max_batch_timeout": { "type": "integer", "minimum": 0, "maximum": 60 },
+                    "max_retries": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "max_concurrency": { "type": "integer", "minimum": 1 },
+                    "retry_delay": { "type": "integer", "minimum": 0 }
+                  }
+                }
+              ]
+            }
           },
           "crons": {
             "description": "Cron expressions this script's scheduled handler answers on.",
             "type": "array",
-            "items": { "type": "string" },
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true,
             "default": []
           },
           "routable": {
-            "description": "Whether a deployment may put a hostname in front of this script. A consumer-only worker sets this false so a stray domain is a validation error rather than a live endpoint nobody meant to publish.",
+            "description": "Whether a deployment may put a hostname in front of this script. A consumer-only worker sets this false, so a stray domain is a validation error rather than a live endpoint nobody meant to publish.",
             "type": "boolean",
             "default": true
           }
@@ -210,13 +397,17 @@
     },
 
     "migrations": {
-      "description": "Forward-only SQL shipped with the build, applied to one D1 binding before the new version goes live.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["binding", "directory"],
-      "properties": {
-        "binding": { "type": "string" },
-        "directory": { "type": "string" }
+      "description": "Forward-only SQL shipped with the build. This declares that the artifact carries a schema and which database it belongs to; applying it is the bootstrap endpoint's job, since the Worker already holds the binding and the alternative is a database credential on whichever machine ran the deploy.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["binding", "directory"],
+        "properties": {
+          "binding": { "$ref": "#/$defs/identifier" },
+          "directory": { "$ref": "#/$defs/contentPath" }
+        }
       }
     },
 
@@ -226,16 +417,20 @@
       "additionalProperties": false,
       "required": ["worker", "endpoint"],
       "properties": {
-        "worker": { "type": "string" },
+        "worker": {
+          "description": "Must be a worker this artifact ships, and one a hostname can reach.",
+          "$ref": "#/$defs/dnsName"
+        },
         "endpoint": {
-          "description": "Path the deployment POSTs to once the version is live. Required to be idempotent: it is called on every version bump.",
+          "description": "Path the deployment POSTs to once the version is live. Called on every version bump, so it has to be idempotent. THE HANDLER MUST AUTHENTICATE: the caller sends a bearer token in the `authorization` header, and an endpoint that answers without one is an open installation channel on a public hostname.",
           "type": "string",
-          "pattern": "^/"
+          "pattern": "^/[^\\s]*$"
         },
         "env": {
-          "description": "Names the deployment must supply in the request body. Values that belong to the installation rather than to the build, such as the first administrator.",
+          "description": "Names the deployment must supply in the JSON request body. Values belonging to the installation rather than to the build, such as the first administrator.",
           "type": "array",
-          "items": { "type": "string" },
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true,
           "default": []
         }
       }

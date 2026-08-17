@@ -177,3 +177,72 @@ variable "limits" {
   type        = map(any)
   default     = {}
 }
+
+variable "extra_bindings" {
+  description = <<-EOT
+    Bindings the artifact does not declare, per worker name. Service bindings,
+    dispatch namespaces, anything joining this app to another.
+
+    Separate from `bindings`, which is checked against the artifact so a typo in a
+    resource name is an error rather than a silent extra binding. These are
+    passed to the provider unchanged, so anything the Cloudflare bindings API
+    accepts works.
+  EOT
+  type        = map(list(any))
+  default     = {}
+}
+
+# ── Worker settings ──────────────────────────────────────────────────────────
+#
+# Every one of these is set on `cloudflare_worker` unconditionally. They are
+# optional AND computed, and the provider does not read "absent" as "keep what is
+# there", so leaving one out turns it off on the next apply.
+
+variable "observability" {
+  description = "Workers Logs. Off by default, matching the platform."
+  type = object({
+    enabled            = optional(bool, false)
+    head_sampling_rate = optional(number, 1)
+  })
+  default = {}
+}
+
+variable "previews_enabled" {
+  description = "Per-version preview URLs, when `workers_dev` is on."
+  type        = bool
+  default     = false
+}
+
+variable "logpush" {
+  type    = bool
+  default = false
+}
+
+variable "tags" {
+  description = "Cloudflare-side tags on each worker."
+  type        = list(string)
+  default     = []
+}
+
+variable "tail_consumers" {
+  description = "Workers receiving this worker's trace events, as [{ name = \"...\" }]."
+  type        = list(any)
+  default     = []
+}
+
+# ── Version annotations ──────────────────────────────────────────────────────
+
+variable "message" {
+  description = "Shown against the version in the dashboard. A release note, or what triggered the deploy."
+  type        = string
+  default     = null
+}
+
+variable "tag" {
+  description = <<-EOT
+    Stamped on the version. Pass the artifact's OCI tag, so a version in the
+    dashboard can be traced back to what produced it.
+  EOT
+  type        = string
+  default     = null
+}

@@ -1,0 +1,95 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    runs-on: ubuntu-latest
+
+    # The end-to-end test pushes and pulls against a real registry rather than a
+    # stub, so the distribution API is exercised as written.
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5111:5000
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run build
+
+      - name: round trip through a registry
+        run: |
+          set -euo pipefail
+          bun run src/cli.ts build \
+            --config examples/compose/.artifact/v1/worker-app.json \
+            --out /tmp/artifact --version v0.0.0 --created 2026-01-01T00:00:00Z
+
+          digest=$(bun run src/cli.ts push /tmp/artifact localhost:5111/ci/example:v0.0.0)
+          bun run src/cli.ts pull "localhost:5111/ci/example:v0.0.0@$digest" --into /tmp/pulled
+          bun run src/cli.ts inspect /tmp/pulled >/dev/null
+
+          test -f /tmp/pulled/worker-app.json
+          test -f /tmp/pulled/dist/api.js
+
+      - name: the same commit builds the same digest
+        run: |
+          set -euo pipefail
+          a=$(bun run src/cli.ts build --config examples/compose/.artifact/v1/worker-app.json \
+                --out /tmp/a --created 2026-01-01T00:00:00Z --print-digest)
+          b=$(bun run src/cli.ts build --config examples/compose/.artifact/v1/worker-app.json \
+                --out /tmp/b --created 2026-01-01T00:00:00Z --print-digest)
+          [ "$a" = "$b" ] || { echo "not reproducible: $a vs $b"; exit 1; }
+
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install check-jsonschema
+      - name: the example validates against the schema
+        run: |
+          check-jsonschema --schemafile schema/worker-app.v1.json \
+            examples/compose/.artifact/v1/worker-app.json
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+
+      - name: formatting
+        run: tofu fmt -check -recursive terraform examples
+
+      - name: validate each module
+        run: |
+          set -euo pipefail
+          for dir in terraform/resources terraform/deploy examples/compose; do
+            echo "── $dir"
+            tofu -chdir="$dir" init -backend=false -input=false >/dev/null
+            tofu -chdir="$dir" validate
+          done
+
+      - name: a plan resolves every binding
+        env:
+          CLOUDFLARE_API_TOKEN: dummy
+        run: |
+          tofu -chdir=examples/compose plan -input=false -lock=false \
+            -var account_id=0000000000000000000000000000000a \
+            -var zone_id=0da42c8d2953a72d0c4ffc7b0e26bce3 \
+            -var api_key=dummy >/dev/null

@@ -43,10 +43,10 @@ module "resources" {
   }
 }
 
-# Something this configuration already owned, bound without being managed here.
-data "cloudflare_workers_kv_namespace" "cache" {
-  account_id   = var.account_id
-  namespace_id = "0f2ac74b498b48028cb68387c421e279"
+variable "cache_namespace_id" {
+  description = "A namespace this configuration already owns, bound without being managed here."
+  type        = string
+  default     = "0f2ac74b498b48028cb68387c421e279"
 }
 
 module "deploy" {
@@ -62,7 +62,7 @@ module "deploy" {
       CACHE = {
         type         = "kv_namespace"
         name         = "CACHE"
-        namespace_id = data.cloudflare_workers_kv_namespace.cache.namespace_id
+        namespace_id = var.cache_namespace_id
       }
     },
   )

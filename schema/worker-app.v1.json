@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/cedricmkl/worker-app/schema/worker-app.v1.json",
+  "title": "worker-app config document",
+  "description": "The document carried as the config blob of a worker-app OCI artifact. It describes what a build IS and what it NEEDS. It never describes where a particular deployment puts it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name", "runtime", "workers"],
+
+  "properties": {
+    "schema_version": {
+      "description": "Version of this document format, not of the application. The application's version is the OCI tag and the org.opencontainers.image.version annotation, so it is not repeated here.",
+      "const": 1
+    },
+
+    "name": {
+      "description": "Identifies the application. Used as the default prefix when a deployment names resources automatically.",
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+
+    "description": { "type": "string" },
+
+    "runtime": {
+      "description": "Facts about how this build was compiled. A deployment cannot override these, because changing them changes which APIs the code was built against.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["compatibility_date"],
+      "properties": {
+        "compatibility_date": { "type": "string", "format": "date" },
+        "compatibility_flags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+
+    "resources": {
+      "description": "Every stateful thing the code binds to. The build says which bindings exist and what kind each is; the deployment says which concrete database or bucket sits behind them.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": ["binding", "kind"],
+        "properties": {
+          "binding": {
+            "description": "The name the code reads off the environment.",
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "kind": { "enum": ["d1", "kv", "r2", "queue", "assets"] },
+          "optional": {
+            "description": "The code runs without it. A deployment may leave it unbound.",
+            "type": "boolean",
+            "default": false
+          },
+          "rebuildable": {
+            "description": "Losing the contents costs time and nothing else. Declared so a deployment can decide whether prevent_destroy is warranted, rather than guessing from the kind.",
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "kind": { "const": "queue" } }, "required": ["kind"] },
+            "then": {
+              "additionalProperties": false,
+              "properties": {
+                "binding": true, "kind": true, "optional": true, "rebuildable": true,
+                "dead_letter": {
+                  "description": "Failures go to a second queue. The deployment names it.",
+                  "type": "boolean",
+                  "default": false
+                }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "assets" } }, "required": ["kind"] },
+            "then": {
+              "required": ["directory"],
+              "additionalProperties": false,
+              "properties": {
+                "binding": true, "kind": true, "optional": true, "rebuildable": true,
+                "directory": {
+                  "description": "Path inside the content layer holding the files to upload.",
+                  "type": "string"
+                },
+                "not_found_handling": {
+                  "enum": ["none", "404-page", "single-page-application"],
+                  "default": "none"
+                },
+                "run_worker_first": {
+                  "description": "true, false, or a list of path globs the Worker sees before the static handler does.",
+                  "oneOf": [
+                    { "type": "boolean" },
+                    { "type": "array", "items": { "type": "string" } }
+                  ],
+                  "default": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "kind": { "enum": ["d1", "kv", "r2"] } },
+              "required": ["kind"]
+            },
+            "then": {
+              "additionalProperties": false,
+              "properties": { "binding": true, "kind": true, "optional": true, "rebuildable": true }
+            }
+          }
+        ]
+      }
+    },
+
+    "vars": {
+      "description": "Plain configuration the code reads. Values belong to the deployment, so only the names are here. A var the code reads and the deployment does not set is undefined at runtime, which is why declaring it is worth the line.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "description": { "type": "string" },
+          "optional": { "type": "boolean", "default": false },
+          "default": { "type": "string" }
+        }
+      }
+    },
+
+    "secrets": {
+      "description": "Credentials the code reads. Values never appear in an artifact.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "description": { "type": "string" },
+          "optional": { "type": "boolean", "default": false },
+          "generate": {
+            "description": "The deployment may create this rather than being given it. For values whose only property is that they are unguessable and consistent, where losing one costs live sessions and nothing else.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["bytes"],
+            "properties": {
+              "bytes": { "type": "integer", "minimum": 16, "maximum": 512 },
+              "encoding": { "enum": ["base64", "base64url", "hex"], "default": "base64" }
+            }
+          },
+          "one_of": {
+            "description": "Alternative names that satisfy the same requirement. One credential in two shapes is a real state during a migration, and demanding both would make the migration impossible.",
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          }
+        }
+      }
+    },
+
+    "workers": {
+      "description": "The scripts this artifact deploys. More than one is allowed: several scripts sharing one database and one release are one application, and splitting them across artifacts would let them drift apart.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "main"],
+        "properties": {
+          "name": {
+            "description": "Suffix appended to the deployment's script name when there is more than one worker. A single worker takes the deployment's name unchanged.",
+            "type": "string",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+          },
+          "main": {
+            "description": "Entry module, relative to the content layer root. Already bundled: nothing rebuilds it at deploy time.",
+            "type": "string"
+          },
+          "bindings": {
+            "description": "Which of the resources above this script binds. Omitted means all of them.",
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "consumes": {
+            "description": "Queue bindings this script is a consumer of, as opposed to only producing to.",
+            "type": "array",
+            "items": { "type": "string" },
+            "default": []
+          },
+          "crons": {
+            "description": "Cron expressions this script's scheduled handler answers on.",
+            "type": "array",
+            "items": { "type": "string" },
+            "default": []
+          },
+          "routable": {
+            "description": "Whether a deployment may put a hostname in front of this script. A consumer-only worker sets this false so a stray domain is a validation error rather than a live endpoint nobody meant to publish.",
+            "type": "boolean",
+            "default": true
+          }
+        }
+      }
+    },
+
+    "migrations": {
+      "description": "Forward-only SQL shipped with the build, applied to one D1 binding before the new version goes live.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binding", "directory"],
+      "properties": {
+        "binding": { "type": "string" },
+        "directory": { "type": "string" }
+      }
+    },
+
+    "bootstrap": {
+      "description": "Installation work the artifact carries out itself, exposed as a handler on one of its own workers. It runs on Cloudflare rather than on the machine holding the credentials, so applying from a laptop and applying from CI do the same thing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker", "endpoint"],
+      "properties": {
+        "worker": { "type": "string" },
+        "endpoint": {
+          "description": "Path the deployment POSTs to once the version is live. Required to be idempotent: it is called on every version bump.",
+          "type": "string",
+          "pattern": "^/"
+        },
+        "env": {
+          "description": "Names the deployment must supply in the request body. Values that belong to the installation rather than to the build, such as the first administrator.",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    }
+  }
+}

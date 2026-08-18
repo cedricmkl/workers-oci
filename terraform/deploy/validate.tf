@@ -22,15 +22,22 @@ locals {
     && !contains(keys(var.vars), k)
   ]
 
+  # Every way a secret can be satisfied. `inherit_secrets` counts: the value is
+  # not here, and the whole point of naming it is that it does not have to be.
+  secret_sources = toset(concat(
+    keys(local.generated),
+    local.supplied,
+    keys(var.secrets_store),
+    tolist(var.inherit_secrets),
+  ))
+
   missing_secrets = [
     for k, s in local.sec_decl : k
     if !try(s.optional, false)
-    && !contains(keys(local.generated), k)
-    && !contains(local.supplied, k)
-    && !contains(keys(var.secrets_store), k)
+    && !contains(local.secret_sources, k)
     && length([
       for alt in try(s.one_of, []) : alt
-      if contains(local.supplied, alt) || contains(keys(var.secrets_store), alt)
+      if contains(local.secret_sources, alt)
     ]) == 0
   ]
 
@@ -151,7 +158,7 @@ resource "terraform_data" "validate" {
 
     precondition {
       condition     = length(local.missing_secrets) == 0
-      error_message = "The artifact needs secrets with nowhere to come from: ${join(", ", local.missing_secrets)}. Each needs an entry in `secrets`, an entry in `secrets_store`, or a `generate` block in the artifact."
+      error_message = "The artifact needs secrets with nowhere to come from: ${join(", ", local.missing_secrets)}. Each needs an entry in `secrets`, an entry in `secrets_store`, a name in `inherit_secrets`, or a `generate` block in the artifact."
     }
 
     precondition {

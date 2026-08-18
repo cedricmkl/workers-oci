@@ -12,7 +12,11 @@
  * document", so the validator is stricter there and the schema's prose says so.
  */
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ConfigError, validate } from "../src/config.js";
+import { describe as describeArtifact, inspect } from "../src/inspect.js";
 
 const base = {
   schema_version: 1,
@@ -207,4 +211,43 @@ describe("cross-references the schema cannot state", () => {
   );
 
   refused("a bootstrap naming a worker this artifact does not ship", { ...base, bootstrap: { worker: "other", endpoint: "/x" } }, "not one of this artifact's workers");
+});
+
+/**
+ * `inspect` takes a reference or a directory, and there are two directory
+ * shapes: `build --out` writes `manifest.json` beside `config.json`, `pull
+ * --into` writes the unpacked tree with the config document under its published
+ * name and no manifest. It understood only the first, so inspecting a pulled
+ * artifact fell through to the reference parser and reported the directory as a
+ * malformed repository name.
+ */
+describe("inspect reads both directory shapes", () => {
+  const dir = (files: Record<string, unknown>): string => {
+    const root = mkdtempSync(join(tmpdir(), "worker-app-inspect-"));
+    for (const [name, value] of Object.entries(files)) {
+      writeFileSync(join(root, name), JSON.stringify(value));
+    }
+    return root;
+  };
+
+  const app = {
+    schema_version: 1,
+    name: "example",
+    runtime: { compatibility_date: "2026-07-14" },
+    workers: [{ name: "example", main: "dist/index.js" }],
+  };
+
+  test("a pulled directory", async () => {
+    const result = await inspect(dir({ "worker-app.json": app }));
+    expect(result.app.name).toBe("example");
+    expect(result.manifest).toBeNull();
+    expect(describeArtifact(result)).toContain("example");
+  });
+
+  test("a built directory", async () => {
+    const manifest = { schemaVersion: 2, layers: [{ size: 10 }], annotations: { "org.opencontainers.image.created": "x" } };
+    const result = await inspect(dir({ "config.json": app, "manifest.json": manifest }));
+    expect(result.manifest).not.toBeNull();
+    expect(describeArtifact(result)).toContain("content");
+  });
 });

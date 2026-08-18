@@ -6,22 +6,42 @@ import { Registry } from "./registry.js";
 import { CONFIG_TYPE, type Manifest, type WorkerApp } from "./types.js";
 
 export type Inspection = {
-  readonly manifest: Manifest;
+  /** Null for a pulled directory, which carries the unpacked tree and no manifest. */
+  readonly manifest: Manifest | null;
   readonly digest: string | null;
   readonly app: WorkerApp;
 };
 
-/** A reference reads from the registry; a path reads a directory `build` wrote. */
+/**
+ * A reference reads from the registry; a path reads a directory on disk.
+ *
+ * TWO SHAPES, and it only understood one. `build --out` writes `manifest.json`
+ * beside `config.json`; `pull --into` writes the unpacked tree with the config
+ * document under its published name, `worker-app.json`, and no manifest. So
+ * `inspect` on a pulled artifact fell through to the reference parser and
+ * reported the directory as a malformed repository name.
+ */
 export const inspect = async (target: string, credential?: CredentialSource): Promise<Inspection> => {
+  const read = (path: string): unknown => JSON.parse(readFileSync(path, "utf8"));
+
   const local = (() => {
+    const dir = resolve(target);
+    // The manifest is present for a built directory and absent for a pulled one,
+    // which is why it does not decide whether this is a local artifact.
+    let manifest: Manifest | null = null;
     try {
-      const dir = resolve(target);
-      const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as Manifest;
-      const app = JSON.parse(readFileSync(join(dir, "config.json"), "utf8")) as WorkerApp;
-      return { manifest, app, digest: null };
+      manifest = read(join(dir, "manifest.json")) as Manifest;
     } catch {
-      return null;
+      manifest = null;
     }
+    for (const name of ["config.json", "worker-app.json"]) {
+      try {
+        return { manifest, app: read(join(dir, name)) as WorkerApp, digest: null };
+      } catch {
+        // The next name, or the registry.
+      }
+    }
+    return null;
   })();
 
   if (local !== null) return local;
@@ -43,7 +63,7 @@ const bytes = (n: number): string =>
 
 export const describe = ({ manifest, digest, app }: Inspection): string => {
   const lines: string[] = [];
-  const a = manifest.annotations ?? {};
+  const a = manifest?.annotations ?? {};
 
   lines.push(`${app.name}${a["org.opencontainers.image.version"] ? ` ${a["org.opencontainers.image.version"]}` : ""}`);
   if (app.description !== undefined) lines.push(`  ${app.description}`);
@@ -54,8 +74,9 @@ export const describe = ({ manifest, digest, app }: Inspection): string => {
   if (a["org.opencontainers.image.revision"] !== undefined) lines.push(`  revision     ${a["org.opencontainers.image.revision"]}`);
   if (a["org.opencontainers.image.source"] !== undefined) lines.push(`  source       ${a["org.opencontainers.image.source"]}`);
   // Not "compressed". The layer is an uncompressed tar on purpose, and calling
-  // the number compressed made it read as the smaller of two figures.
-  lines.push(`  content      ${bytes(manifest.layers[0]?.size ?? 0)}`);
+  // the number compressed made it read as the smaller of two figures. A pulled
+  // directory has no manifest, so it has no size to report either.
+  if (manifest !== null) lines.push(`  content      ${bytes(manifest.layers[0]?.size ?? 0)}`);
   lines.push(`  runtime      compatibility date ${app.runtime.compatibility_date}`);
   if ((app.runtime.compatibility_flags ?? []).length > 0) {
     lines.push(`               flags ${(app.runtime.compatibility_flags ?? []).join(", ")}`);

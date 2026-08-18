@@ -216,6 +216,13 @@ export const build = (options: BuildOptions): BuildResult => {
     }
   }
 
+  for (const step of app.bootstrap ?? []) {
+    if (step.run === undefined) continue;
+    if (statSync(resolve(root, step.run), { throwIfNoEntry: false }) === undefined) {
+      throw new Error(`bootstrap step ${step.name} runs ${step.run}, which is not in the artifact`);
+    }
+  }
+
   // `modules` is left OFF when there is nothing to say, so a document that
   // declared none and has no chunks serialises exactly as it was written.
   const workers = app.workers.map((w) => {
@@ -232,6 +239,13 @@ export const build = (options: BuildOptions): BuildResult => {
     if (r.kind === "assets" && r.directory !== undefined) targets.add(r.directory);
   }
   for (const m of app.migrations ?? []) targets.add(m.directory);
+
+  // A step that names a program has to SHIP that program. It is not reachable
+  // from a worker's entry module, so nothing else in this set would pick it up,
+  // and an artifact declaring a step it does not carry fails at deploy time on
+  // the one machine that cannot fix it.
+  for (const step of app.bootstrap ?? []) if (step.run !== undefined) targets.add(step.run);
+
   for (const extra of options.include ?? []) targets.add(extra);
 
   const seen = new Map<string, Entry>();

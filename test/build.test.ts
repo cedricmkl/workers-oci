@@ -236,3 +236,55 @@ describe("what reaches the layer", () => {
     expect(filesOf(root)).toEqual(["dist/chunk-A.js", "dist/index.js"]);
   });
 });
+
+/**
+ * A bootstrap step that names a program has to ship it. The program is not
+ * reachable from any worker's entry module, so nothing else in the ship set
+ * would pick it up, and an artifact declaring a step it does not carry fails at
+ * deploy time on the one machine that cannot fix it.
+ */
+describe("bootstrap programs", () => {
+  const doc = (over: Record<string, unknown> = {}) =>
+    document({
+      bootstrap: [{ name: "seed", phase: "pre", run: "bootstrap/seed.mjs" }],
+      ...over,
+    });
+
+  test("a run step's program ships", () => {
+    const root = tree({
+      "worker-app.json": JSON.stringify(doc()),
+      "dist/index.js": "export default {}",
+      "bootstrap/seed.mjs": "process.exit(0)",
+    });
+    expect(built(root).files).toEqual(["bootstrap/seed.mjs", "dist/index.js"]);
+  });
+
+  test("a run step naming a program the tree does not have is refused", () => {
+    const root = tree({
+      "worker-app.json": JSON.stringify(doc()),
+      "dist/index.js": "export default {}",
+    });
+    expect(() => built(root)).toThrow(/bootstrap step seed runs bootstrap\/seed\.mjs/);
+  });
+
+  test("an endpoint step ships nothing extra", () => {
+    const root = tree({
+      "worker-app.json": JSON.stringify(
+        document({ bootstrap: [{ name: "verify", worker: "example", endpoint: "/admin/verify" }] }),
+      ),
+      "dist/index.js": "export default {}",
+    });
+    expect(built(root).files).toEqual(["dist/index.js"]);
+  });
+
+  test("a program is not treated as a worker module", () => {
+    const root = tree({
+      "worker-app.json": JSON.stringify(doc()),
+      "dist/index.js": "export default {}",
+      "bootstrap/seed.mjs": "process.exit(0)",
+    });
+    // It lives outside the entry's directory, so discovery never sees it, and a
+    // deployment must not upload it as part of the script.
+    expect(built(root).app.workers[0]).not.toHaveProperty("modules");
+  });
+});

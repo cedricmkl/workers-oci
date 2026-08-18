@@ -13,7 +13,7 @@ const USAGE = `workers-oci — package a Cloudflare Worker and its resources as 
   workers-oci pull    <reference> --into <dir>
   workers-oci inspect <reference|dir> [--json]
   workers-oci verify  <file>
-  workers-oci bootstrap --dir <dir> --url <origin> [--token <t>] [--env K=V]...
+  workers-oci bootstrap --dir <dir> --url <origin> [--token-stdin] [--env K=V]...
 
 build
   --config <file>     the config document
@@ -30,6 +30,9 @@ registry
   --username <user>       default: ~/.docker/config.json, then a credential helper
   --password-stdin        read the password from stdin
   Or set WORKERS_OCI_REGISTRY_USER and WORKERS_OCI_REGISTRY_PASSWORD.
+
+  --password and --token also work and warn: a secret in the process arguments
+  is readable by every user on the machine.
 
   Documentation: https://github.com/cedricmkl/workers-oci
 `;
@@ -73,10 +76,27 @@ const readStdin = async (): Promise<string> => {
   return Buffer.concat(chunks).toString("utf8").trim();
 };
 
+/**
+ * A secret on the command line is readable by every user on the machine.
+ *
+ * `ps aux` and the process's own cmdline show it while it runs, the shell
+ * writes it to history, and CI echoes it whenever the command is printed.
+ * `docker login --password` warns for the same reason. The flags still work,
+ * because taking them away breaks a script that is otherwise correct, but they
+ * say so on stderr and the stdin form is what the docs show.
+ */
+const warnArgvSecret = (flag: string): void => {
+  process.stderr.write(
+    `warning: ${flag} puts a secret in the process arguments, where anyone on this machine can read it. Use ${flag}-stdin.\n`,
+  );
+};
+
 const credentialFrom = async (args: Args) => {
   const username = one(args, "username");
   if (username === undefined) return undefined;
-  const password = has(args, "password-stdin") ? await readStdin() : one(args, "password");
+  if (has(args, "password-stdin")) return { username, password: await readStdin() };
+  const password = one(args, "password");
+  if (password !== undefined) warnArgvSecret("--password");
   return { username, password };
 };
 
@@ -173,10 +193,15 @@ const run = async (argv: readonly string[]): Promise<number> => {
         env[pair.slice(0, eq)] = pair.slice(eq + 1);
       }
 
+      // A bearer token for an installation endpoint, same reasoning as
+      // `--password` above.
+      const token = has(args, "token-stdin") ? await readStdin() : one(args, "token");
+      if (!has(args, "token-stdin") && token !== undefined) warnArgvSecret("--token");
+
       const result = await bootstrap({
         dir: required(args, "dir"),
         url: required(args, "url"),
-        ...(one(args, "token") !== undefined ? { token: one(args, "token") as string } : {}),
+        ...(token !== undefined ? { token } : {}),
         env,
       });
 

@@ -12,39 +12,48 @@ is and what it needs.
   "description": "An example worker-app.",
   "runtime": {
     "compatibility_date": "2026-07-14",
-    "compatibility_flags": ["nodejs_compat"]
+    "compatibility_flags": ["nodejs_compat"],
+    "limits": { "cpu_ms": 200 },
+    "placement": { "mode": "smart" }
   },
   "resources": [
     { "binding": "DB", "kind": "d1" },
     { "binding": "CACHE", "kind": "kv", "rebuildable": true },
     { "binding": "UPLOADS", "kind": "r2", "optional": true },
-    { "binding": "EVENTS", "kind": "queue", "dead_letter": true },
+    { "binding": "EVENTS", "kind": "queue" },
     {
       "binding": "ASSETS",
       "kind": "assets",
       "directory": "public",
-      "not_found_handling": "single-page-application"
+      "not_found_handling": "single-page-application",
+      "html_handling": "auto-trailing-slash"
     }
   ],
   "vars": [
     { "name": "PUBLIC_URL", "description": "Where this instance answers." },
-    { "name": "LOG_LEVEL", "optional": true, "default": "info" }
+    { "name": "LOG_LEVEL", "optional": true, "default": "info" },
+    { "name": "FEATURE_FLAGS", "type": "json", "optional": true }
   ],
   "secrets": [
     { "name": "API_KEY" },
     { "name": "COOKIE_SECRET", "generate": { "bytes": 32, "encoding": "base64url" } }
   ],
   "workers": [
-    { "name": "api", "main": "dist/api.js", "crons": ["0 3 * * *"] },
+    {
+      "name": "api",
+      "main": "dist/api.js",
+      "modules": [{ "path": "dist/_headers", "content_type": "text/plain" }],
+      "crons": ["0 3 * * *"]
+    },
     {
       "name": "consumer",
       "main": "dist/consumer.js",
       "bindings": ["DB", "EVENTS"],
-      "consumes": ["EVENTS"],
+      "consumes": [{ "binding": "EVENTS", "dead_letter": true, "max_batch_size": 10 }],
       "routable": false
     }
   ],
-  "migrations": { "binding": "DB", "directory": "migrations" }
+  "migrations": [{ "binding": "DB", "directory": "migrations" }]
 }
 ```
 
@@ -58,9 +67,32 @@ workers-oci verify worker-app.json
 
 `optional` means the code runs without it and a deployment may leave it unbound.
 
-`rebuildable` means losing the contents costs time and nothing else, which is
-what lets a deployment decide whether to guard the resource against replacement.
-A cache is rebuildable; the table holding people's accounts is not.
+`rebuildable` states that losing the contents costs time and nothing else. It is
+a claim in the document that a deployment may act on. Nothing in the two
+Terraform modules reads it. `workers-oci inspect` prints it. A cache is
+rebuildable, the table holding people's accounts is not.
+
+Twelve kinds:
+
+| kind | |
+|---|---|
+| `d1`, `kv`, `r2`, `queue` | the four `terraform/resources` creates |
+| `queue` | `produces`, default true. A queue this app only reads from, filled by something else, sets it false. |
+| `assets` | requires `directory`. Takes `not_found_handling`, `html_handling` and `run_worker_first`. One per artifact, and the files ride in the content layer. |
+| `ratelimit` | requires `limit` and `period`. `period` is 10 or 60 seconds. |
+| `hyperdrive`, `vectorize`, `analytics_engine` | the deployment supplies the id or name |
+| `ai`, `browser`, `version_metadata` | no account-level resource behind them |
+
+Every binding except `assets` needs a value at deploy time, or `optional: true`
+here.
+
+### Marking a var
+
+`type: "json"` uploads the value as a JSON binding, which is how a var carries an
+object or a list. The default is `string`.
+
+`default` is a build-time fallback. A value from the deployment wins over it, and
+a var with a default is never missing at plan time.
 
 ### Marking a secret
 
@@ -80,14 +112,42 @@ required.
 `bindings` narrows what a script receives. Omit it and the script gets
 everything.
 
+`modules` names files the script needs uploaded beyond its entry: WebAssembly,
+text and data blobs, and the `_headers` and `_redirects` files, which Cloudflare
+treats as modules rather than as files in the assets directory. `content_type` is
+inferred from the extension when you leave it out. Chunks emitted next to the
+entry module are found without being listed, so this is for files a bundler did
+not write.
+
+`consumes` lists the queues this script reads. A bare binding name takes the
+platform defaults. The object form carries the subscription's settings:
+
+```json
+"consumes": [
+  {
+    "binding": "EVENTS",
+    "dead_letter": true,
+    "max_batch_size": 10,
+    "max_batch_timeout": 5,
+    "max_retries": 3,
+    "max_concurrency": 4,
+    "retry_delay": 30
+  }
+]
+```
+
+`max_batch_timeout` and `retry_delay` are seconds. `dead_letter` sits here rather
+than on the queue resource: two scripts reading one queue can send their failures
+to different places, and the deployment names the queue they go to.
+
 `routable: false` says a script has no HTTP entry point worth publishing, which
 makes a hostname pointed at it a validation error rather than a live endpoint
 nobody meant to expose.
 
 ## Bundling
 
-workers-oci ships what your bundler produced. Nothing rebuilds at deploy time,
-which is the point of pinning a digest.
+workers-oci ships what your bundler produced. Nothing rebuilds at deploy time, so
+the digest you pin is the code that runs.
 
 Any bundler works as long as it emits ES modules. With esbuild:
 
@@ -97,8 +157,25 @@ bunx esbuild src/api.ts src/consumer.ts \
   --outdir=dist --splitting
 ```
 
-The whole directory holding an entry module is shipped, so chunks emitted by
-code splitting are included without being named in the document.
+The whole directory holding an entry module ships, and the build then discovers
+the chunks the bundler wrote beside that entry and records them in the worker's
+`modules`. Code splitting names its own output: esbuild writes
+`chunk-QW7T4A3B.js`, with a name that changes whenever the input does, so listing
+those by hand is wrong on the next build.
+
+Discovery is an allowlist of the extensions the runtime has a module type for:
+`js`, `mjs`, `cjs`, `wasm`, `json`, `txt`, `bin`. That is what keeps `api.js.map`
+out, since uploading a source map costs script size for a file nothing imports.
+A path is skipped when it is:
+
+- outside the entry module's directory, unless the entry sits at the layer root
+- another worker's entry module, since two workers built into one directory share
+  their chunks without either being a module of the other
+- under an assets `directory` or a migrations `directory`
+- already in `modules`, where its `content_type` is kept
+- the config document itself
+
+The result is sorted, because the config document is part of the digest.
 
 Ship anything else with `--include`:
 
@@ -112,6 +189,10 @@ workers-oci build --config worker-app.json --out .artifact --include LICENSE
 workers-oci build --config worker-app.json --out .artifact --version v1.2.3
 ```
 
+Paths in the document are relative to the config document's directory. Pass
+`--root` when they are relative to something else, such as a repository root
+holding the document in a subdirectory.
+
 Provenance comes from git: the revision from `HEAD`, the source from the `origin`
 remote, and the `created` annotation from the commit timestamp. Override any of
 them with `--revision`, `--source` and `--created`.
@@ -121,7 +202,7 @@ The output directory holds the three files a push needs:
 ```
 .artifact/
   config.json       the config document, as the bytes that get uploaded
-  content.tar.gz    the files
+  content.tar       the files
   manifest.json     the OCI manifest, as the bytes that get uploaded
 ```
 
@@ -129,17 +210,18 @@ The output directory holds the three files a push needs:
 
 ## Reproducibility
 
-Two builds of one commit produce one digest, which is what makes pinning a digest
-worth doing. Check it:
+Two builds of one commit produce one digest. Check it:
 
 ```
 workers-oci build --config worker-app.json --out /tmp/a --print-digest
 workers-oci build --config worker-app.json --out /tmp/b --print-digest
 ```
 
-The `created` annotation is the input that most often breaks this. It defaults to
-the commit timestamp for that reason, and passing `--created "$(date)"` would
-give every rebuild a new digest.
+The `created` annotation is the input that most often breaks this. It comes from
+`--created`, then `SOURCE_DATE_EPOCH` as seconds since the Unix epoch, then the
+commit timestamp, then the epoch itself. Set `SOURCE_DATE_EPOCH` when there is no
+commit to read, such as a build from an exported tree. Passing
+`--created "$(date)"` gives every rebuild a new digest.
 
 ## Publishing
 
@@ -152,9 +234,19 @@ capture one without parsing the other.
 
 Credentials come from `~/.docker/config.json` and any credential helper it names,
 so `docker login`, `podman login`, `oras login` and
-`aws ecr get-login-password | docker login --password-stdin` all work. Override
-with `WORKERS_OCI_REGISTRY_USER` and `WORKERS_OCI_REGISTRY_PASSWORD`, or with
-`--username` and `--password-stdin`.
+`aws ecr get-login-password | docker login --password-stdin` all work. Set
+`DOCKER_CONFIG` to read the config from another directory. Override with
+`WORKERS_OCI_REGISTRY_USER` and `WORKERS_OCI_REGISTRY_PASSWORD`, or with
+`--username` and either `--password-stdin` or `--password`.
+
+Registries are reached over HTTPS, except `localhost`, `127.0.0.1` and `::1`. Set
+`WORKERS_OCI_PLAIN_HTTP=1` for a plain-HTTP registry on another host.
+
+Read back what you published:
+
+```
+workers-oci inspect ghcr.io/example/app:v1.2.3 --json
+```
 
 ## In CI
 

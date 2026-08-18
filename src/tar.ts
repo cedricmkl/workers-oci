@@ -42,6 +42,10 @@ const ascii = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 /** Octal, NUL-terminated, left-padded with zeroes. The classic tar number. */
 const octal = (value: number, width: number): Uint8Array => {
+  // A negative or fractional value has no octal spelling here. `(-1).toString(8)`
+  // is `"-1"`, which pads to `000000000-1`: not a number any reader accepts, and
+  // written without complaint. Reachable from `--created` with a date before 1970.
+  if (!Number.isInteger(value) || value < 0) throw new Error(`not a whole number of at least zero: ${value}`);
   const text = value.toString(8).padStart(width - 1, "0");
   if (text.length > width - 1) throw new Error(`value ${value} does not fit in ${width} octal bytes`);
   return ascii(`${text}\0`);
@@ -55,15 +59,43 @@ const put = (buf: Uint8Array, at: number, bytes: Uint8Array): void => {
  * ustar splits a long path across `prefix` and `name` at a slash. Anything that
  * cannot be split is rejected rather than silently truncated or promoted to a
  * GNU extension, which would make the archive non-reproducible across writers.
+ *
+ * MEASURED IN BYTES, and it used to be measured in `String.length`. The two
+ * agree only for ASCII: a 63-character path of `ä` is 123 bytes, passed the
+ * 100-character check, and was written into a 100-byte field, so mode, uid, gid,
+ * size and mtime were overwritten by the tail of the name and the rest spilled
+ * into `linkname`. The checksum is computed afterwards, so the header came out
+ * self-consistent and no reader complained: GNU tar listed a truncated name and
+ * the missing bytes were simply gone. Two paths differing only past byte 100
+ * also collided on unpack, and the duplicate check compares JS strings so it did
+ * not catch them.
+ *
+ * THE SPLIT TAKES THE LONGEST PREFIX, which is what GNU tar, libarchive and
+ * Go's `archive/tar` all do. Taking the shortest is equally valid ustar and
+ * produces different header bytes for the same logical path, so a second
+ * implementation using its standard library's tar writer would compute a
+ * different layer digest for identical content. For a format whose premise is
+ * that anybody can rebuild the artifact and get the same digest, agreeing with
+ * the existing writers is the requirement.
  */
 const splitPath = (path: string): { name: string; prefix: string } => {
-  if (path.length <= NAME_MAX) return { name: path, prefix: "" };
+  const bytes = ascii(path);
+  if (bytes.length <= NAME_MAX) return { name: path, prefix: "" };
 
-  for (let i = path.length - NAME_MAX - 1; i < path.length; i++) {
-    if (path[i] !== "/") continue;
-    const prefix = path.slice(0, i);
-    const name = path.slice(i + 1);
-    if (prefix.length <= PREFIX_MAX && name.length <= NAME_MAX) return { name, prefix };
+  // Byte indices of every slash, so the search below is over the encoding rather
+  // than over code units.
+  const slashes: number[] = [];
+  for (let i = 0; i < bytes.length; i++) if (bytes[i] === 0x2f) slashes.push(i);
+
+  for (let k = slashes.length - 1; k >= 0; k--) {
+    const at = slashes[k] as number;
+    if (at > PREFIX_MAX) continue;
+    if (bytes.length - at - 1 > NAME_MAX) break;
+    const decoder = new TextDecoder();
+    return {
+      prefix: decoder.decode(bytes.subarray(0, at)),
+      name: decoder.decode(bytes.subarray(at + 1)),
+    };
   }
 
   throw new Error(`path is too long for a ustar header and cannot be split: ${path}`);

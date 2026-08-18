@@ -151,3 +151,40 @@ describe("module discovery", () => {
     expect(modulesOf(root)).toEqual(["dist/a.js", "dist/m.wasm", "dist/z.js"]);
   });
 });
+
+/**
+ * `source` is a provenance annotation, annotations are part of the manifest, and
+ * the manifest digest is what a deployment pins. So the way the tree was cloned
+ * reached the digest: an ssh checkout and an https checkout of one commit pinned
+ * two different digests for byte-identical content, and a downloaded tarball
+ * with no remote at all pinned a third.
+ */
+describe("the remote URL is recorded one way", () => {
+  const sourceOf = (remote: string): string | undefined => {
+    const root = tree({
+      "worker-app.json": JSON.stringify(document()),
+      "dist/index.js": "export default {}",
+    });
+    const result = build({
+      config: join(root, "worker-app.json"),
+      out: join(root, ".out"),
+      created: "2026-07-14T00:00:00Z",
+      source: remote,
+      revision: "abc",
+    });
+    return result.manifest.annotations?.["org.opencontainers.image.source"];
+  };
+
+  test.each([
+    ["scp-like ssh", "git@github.com:owner/repo.git"],
+    ["ssh URL", "ssh://git@github.com/owner/repo.git"],
+    ["https", "https://github.com/owner/repo.git"],
+    ["https without the suffix", "https://github.com/owner/repo"],
+  ])("%s", (_label, remote) => {
+    expect(sourceOf(remote)).toBe("https://github.com/owner/repo");
+  });
+
+  test("a remote it cannot canonicalise is left alone rather than mangled", () => {
+    expect(sourceOf("file:///srv/git/repo")).toBe("file:///srv/git/repo");
+  });
+});

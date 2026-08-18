@@ -39,7 +39,7 @@
     },
 
     "name": {
-      "description": "Identifies the application. Used as the default script name and as the prefix when the artifact ships several workers.",
+      "description": "Identifies the application. A worker whose own name equals this one is deployed under it unchanged; every other worker is deployed as `<this name>-<worker name>`. The rule does not depend on how many workers the artifact ships, so adding a second one never renames the first.",
       "$ref": "#/$defs/dnsName",
       "maxLength": 54
     },

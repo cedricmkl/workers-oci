@@ -147,6 +147,30 @@ const discover = (
   return [...declared, ...found];
 };
 
+/**
+ * One spelling of a remote, whichever way the tree was cloned.
+ *
+ * `source` becomes an OCI annotation and annotations are part of the manifest,
+ * so the manifest digest moved with the clone: an SSH checkout, an HTTPS
+ * checkout and a downloaded tarball of one commit pinned three different
+ * digests for byte-identical content. The layer and config blobs never varied,
+ * only this.
+ */
+const canonical = (remote: string | null): string | null => {
+  if (remote === null) return null;
+  const trimmed = remote.replace(/\.git$/, "");
+
+  // A URL that already names its scheme is left alone. The scp-like pattern
+  // below matches one otherwise, taking `https` for the host.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    return trimmed.replace(/^ssh:\/\/(?:[^@/]+@)?/i, "https://");
+  }
+
+  // `git@host:owner/repo`, the scp-like form.
+  const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(trimmed);
+  return scp === null ? trimmed : `https://${scp[1]}/${scp[2]}`;
+};
+
 export const build = (options: BuildOptions): BuildResult => {
   const configPath = resolve(options.config);
   const root = resolve(options.root ?? dirname(configPath));
@@ -204,7 +228,9 @@ export const build = (options: BuildOptions): BuildResult => {
   // ── Provenance ────────────────────────────────────────────────────────────
 
   const revision = options.revision ?? git(["rev-parse", "HEAD"], root) ?? undefined;
-  const source = options.source ?? git(["remote", "get-url", "origin"], root) ?? undefined;
+  // Through `canonical` whichever way it arrived. A `--source` passed by a CI
+  // job is exactly as capable of spelling one repository two ways.
+  const source = canonical(options.source ?? git(["remote", "get-url", "origin"], root)) ?? undefined;
 
   // The COMMIT timestamp, so two builds of one commit agree. A wall clock would
   // give every rebuild a different digest.

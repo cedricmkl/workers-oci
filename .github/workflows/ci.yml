@@ -58,14 +58,61 @@ jobs:
               || { echo "worker $w does not declare the shared chunk"; exit 1; }
           done
 
-      - name: the same commit builds the same digest
+      # The build EMITS a document, with `modules` filled in, and that document is
+      # what a deployment reads. Only the hand-written source was ever validated,
+      # so a build that wrote something schema-invalid passed both jobs.
+      - name: the emitted document validates too
         run: |
           set -euo pipefail
-          a=$(bun run src/cli.ts build --config examples/compose/.artifact/v1/worker-app.json \
-                --out /tmp/a --created 2026-01-01T00:00:00Z --print-digest)
-          b=$(bun run src/cli.ts build --config examples/compose/.artifact/v1/worker-app.json \
-                --out /tmp/b --created 2026-01-01T00:00:00Z --print-digest)
-          [ "$a" = "$b" ] || { echo "not reproducible: $a vs $b"; exit 1; }
+          pipx run check-jsonschema --schemafile schema/worker-app.v1.json /tmp/artifact/config.json
+
+      # Two builds in one checkout prove nothing: same directory, same git state,
+      # same binary, seconds apart. None of the inputs that actually vary between
+      # two people building one commit can move. A second CLONE at a different
+      # path, reached over a different remote URL, is the cheapest thing that
+      # exercises them, and it is what caught the manifest digest depending on
+      # whether the tree came from ssh or https.
+      - name: a second clone builds the same bytes
+        run: |
+          set -euo pipefail
+          # ONE repository, TWO ways of naming it. This is the difference the
+          # digest used to depend on: an ssh checkout and an https checkout of
+          # the same commit pinned different digests for identical content,
+          # because the remote URL rides in the manifest as a provenance
+          # annotation and was recorded verbatim.
+          git clone --quiet . /tmp/second
+          git remote set-url origin https://github.com/cedricmkl/workers-oci.git
+          git -C /tmp/second remote set-url origin git@github.com:cedricmkl/workers-oci.git
+
+          bun run src/cli.ts build --config examples/compose/.artifact/v1/worker-app.json \
+            --out /tmp/a --created 2026-01-01T00:00:00Z >/dev/null
+          bun run src/cli.ts build --config /tmp/second/examples/compose/.artifact/v1/worker-app.json \
+            --out /tmp/b --created 2026-01-01T00:00:00Z >/dev/null
+
+          # The layer and the config blob, not only the digest that summarises
+          # them: a mismatch names which of the three moved.
+          cmp /tmp/a/content.tar /tmp/b/content.tar
+          cmp /tmp/a/config.json /tmp/b/config.json
+          cmp /tmp/a/manifest.json /tmp/b/manifest.json
+
+      # A non-ASCII path is 1 to 4 bytes per character, and the ustar name field
+      # is 100 BYTES. Measuring it in JS string length wrote past the field, over
+      # mode, uid, gid, size and mtime, and the checksum was computed afterwards
+      # so the header came out self-consistent and no reader complained.
+      - name: a non-ASCII path round trips through GNU tar
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/utf8/dist
+          printf 'export default {}' > /tmp/utf8/dist/index.js
+          printf 'export const x = 1' > "/tmp/utf8/dist/grüße-chunk.js"
+          jq -n '{schema_version: 1, name: "utf8",
+                  runtime: {compatibility_date: "2026-07-14"},
+                  workers: [{name: "utf8", main: "dist/index.js"}]}' > /tmp/utf8/worker-app.json
+          bun run src/cli.ts build --config /tmp/utf8/worker-app.json --out /tmp/utf8out \
+            --created 2026-01-01T00:00:00Z >/dev/null
+          tar tf /tmp/utf8out/content.tar | grep -qx 'dist/grüße-chunk.js'
+          jq -e '.workers[0].modules | map(.path) | index("dist/grüße-chunk.js")' \
+            /tmp/utf8out/config.json >/dev/null
 
   schema:
     runs-on: ubuntu-latest

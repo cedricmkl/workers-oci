@@ -134,16 +134,23 @@ describe("validate", () => {
 describe("agreement with the normative schema", () => {
   const queue = { ...base, resources: [{ binding: "EVENTS", kind: "queue" }] };
 
-  test.each([
-    "hyperdrive",
-    "vectorize",
-    "analytics_engine",
-    "ai",
-    "browser",
-    "version_metadata",
-    "ratelimit",
-  ])("accepts the %s kind", (kind) => {
-    expect(problems({ ...base, resources: [{ binding: "THING", kind }] })).toEqual([]);
+  test.each(["hyperdrive", "vectorize", "analytics_engine", "ai", "browser", "version_metadata"])(
+    "accepts the %s kind",
+    (kind) => {
+      expect(problems({ ...base, resources: [{ binding: "THING", kind }] })).toEqual([]);
+    },
+  );
+
+  test("accepts a ratelimit binding with its two required settings", () => {
+    expect(
+      problems({ ...base, resources: [{ binding: "THROTTLE", kind: "ratelimit", limit: 100, period: 60 }] }),
+    ).toEqual([]);
+  });
+
+  test("rejects a ratelimit period the runtime does not offer", () => {
+    expect(
+      problems({ ...base, resources: [{ binding: "THROTTLE", kind: "ratelimit", limit: 100, period: 30 }] }),
+    ).toContainEqual(expect.stringContaining("must be 10 or 60 seconds"));
   });
 
   test("accepts a consumer as a bare binding name", () => {

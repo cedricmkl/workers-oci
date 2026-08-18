@@ -9,24 +9,13 @@ read. A build turns that into a single artifact addressed by digest. Deploying i
 is supplying an account, some ids and some values.
 
 ```
-workers-oci build   --config worker-app.json --out .artifact
-workers-oci push    .artifact ghcr.io/example/app:v1.2.3
+workers-oci build   --config worker-app.json --out .artifact [--root .]
+workers-oci push    .artifact ghcr.io/example/app:v1.2.3 [--tag latest]
 workers-oci pull    ghcr.io/example/app:v1.2.3@sha256:... --into .artifact/v1
-workers-oci inspect ghcr.io/example/app:v1.2.3
+workers-oci inspect ghcr.io/example/app:v1.2.3 [--json]
+workers-oci verify  worker-app.json
+workers-oci help
 ```
-
-## Why an artifact
-
-Building on the machine that deploys ties the two together. The bundle that
-reaches Cloudflare exists only on that machine, and rolling back means rebuilding
-an old commit and hoping the output matches.
-
-An artifact splits them. CI builds once, and every environment deploys that exact
-object. A rollback points at a tag that still exists.
-
-Registries already do the surrounding work: replication, mirroring, retention,
-signing, access control. A worker-app is an ordinary OCI manifest, so all of it
-applies.
 
 ## The config document
 
@@ -40,21 +29,32 @@ date, its scripts, and the bindings, variables and secrets its code reads.
   "runtime": { "compatibility_date": "2026-07-14" },
   "resources": [
     { "binding": "DB", "kind": "d1" },
-    { "binding": "EVENTS", "kind": "queue", "dead_letter": true }
+    { "binding": "CACHE", "kind": "kv" },
+    { "binding": "EVENTS", "kind": "queue" }
   ],
   "vars": [{ "name": "PUBLIC_URL" }],
-  "secrets": [{ "name": "COOKIE_SECRET", "generate": { "bytes": 32 } }],
-  "workers": [
-    { "name": "example", "main": "dist/index.js", "consumes": ["EVENTS"] }
+  "secrets": [
+    { "name": "API_KEY" },
+    { "name": "COOKIE_SECRET", "generate": { "bytes": 32 } }
   ],
-  "migrations": { "binding": "DB", "directory": "migrations" }
+  "workers": [
+    {
+      "name": "example",
+      "main": "dist/index.js",
+      "consumes": [{ "binding": "EVENTS", "dead_letter": true }]
+    }
+  ],
+  "migrations": [{ "binding": "DB", "directory": "migrations" }]
 }
 ```
 
 Bindings appear by name and kind. Which database sits behind `DB` is decided at
-deploy time, so one artifact runs in staging and in production.
+deploy time, so one artifact runs in staging and in production. `dead_letter`
+sits on the consumer rather than on the queue, because two scripts reading one
+queue can send their failures to different places.
 
-Full reference: [docs/artifact.md](docs/artifact.md), schema at
+Format: [docs/artifact.md](docs/artifact.md). Field by field:
+[docs/building.md](docs/building.md) and
 [schema/worker-app.v1.json](schema/worker-app.v1.json).
 
 ## The Terraform modules
@@ -62,9 +62,11 @@ Full reference: [docs/artifact.md](docs/artifact.md), schema at
 Two modules, meeting at a map of binding objects. Take both, take one, or take
 neither and read the config document yourself.
 
-**`terraform/resources`** creates what the artifact declares and hands back
-binding objects. Names are an argument, so whatever convention your configuration
-already uses keeps working.
+**`terraform/resources`** creates the d1, kv, r2 and queue bindings you list in
+`names`, and hands back binding objects. Names are an argument, so whatever
+convention your configuration already uses keeps working. A declared binding you
+leave out of `names` is untouched, and naming a binding of any other kind fails
+the plan with a message saying so.
 
 **`terraform/deploy`** uploads each script as a version, resolves its bindings,
 points the live deployment at it, and attaches cron triggers, queue consumers,
@@ -86,7 +88,8 @@ module "deploy" {
   bindings = merge(module.resources.bindings, {
     CACHE = { type = "kv_namespace", name = "CACHE", namespace_id = var.cache_id }
   })
-  queue_ids = module.resources.queue_ids
+  queue_ids          = module.resources.queue_ids
+  dead_letter_queues = module.resources.dead_letter_queues
 
   vars    = { PUBLIC_URL = "https://app.example.com" }
   secrets = { API_KEY = var.api_key }
@@ -95,6 +98,9 @@ module "deploy" {
   domains = { example = ["app.example.com"] }
 }
 ```
+
+`CACHE` is declared by the artifact and left out of `names`, so this
+configuration supplies a namespace it already owns.
 
 Neither module configures a provider, reads a file of its own, or assumes a
 directory layout. Credentials, naming and where values come from stay with the
@@ -119,11 +125,11 @@ Values in the first and third reach state, because the Cloudflare API never
 returns a secret and the provider keeps the value to know whether it changed.
 Encrypt state, or use the second.
 
-There is no fourth option where a secret is set out of band and left alone. A
-worker version lists its bindings exhaustively, so a version created by Terraform
-drops any secret it does not name. The `inherit` binding type exists for exactly
-this and is unusable here: the API reports the binding resolved to `secret_text`,
-which differs from the configured `inherit` on every read, and `bindings` forces
+A secret set outside Terraform does not survive the next deploy. A worker version
+lists its bindings exhaustively, so a version created by Terraform drops any
+secret it does not name. The `inherit` binding type exists for this and is
+unusable here: the API reports the binding resolved to `secret_text`, which
+differs from the configured `inherit` on every read, and `bindings` forces
 replacement on any difference. The result is a version and a deployment replaced
 on every plan.
 
@@ -134,10 +140,10 @@ bun install -g @cedricmkl/workers-oci
 ```
 
 The CLI speaks the OCI distribution API directly, so `oras`, `docker` and `crane`
-are not needed. Credentials come from `~/.docker/config.json`, from
-`WORKERS_OCI_REGISTRY_USER` and `WORKERS_OCI_REGISTRY_PASSWORD`, or from
-`--username` and `--password-stdin`. Logging in with any of the usual tools is
-enough.
+are not needed. Credentials come from `~/.docker/config.json`, or from the
+directory `DOCKER_CONFIG` names, from `WORKERS_OCI_REGISTRY_USER` and
+`WORKERS_OCI_REGISTRY_PASSWORD`, or from `--username` with `--password-stdin` or
+`--password`. Logging in with any of the usual tools is enough.
 
 ## Scope
 
@@ -147,8 +153,9 @@ wiring between separate applications belong to whatever already manages your
 account.
 
 Durable Objects are unsupported in v1. The Cloudflare provider cannot create a
-worker version that declares one, so `build` rejects an artifact that exports a
-DO class. Details in [docs/artifact.md](docs/artifact.md#limits).
+worker version that declares one, so `build` rejects a config document that
+declares a `durable_object` kind or carries a `class_name` key. Details in
+[docs/artifact.md](docs/artifact.md#limits).
 
 ## License
 

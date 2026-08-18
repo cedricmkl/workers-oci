@@ -82,17 +82,48 @@ export class Registry {
     }
 
     const headers = new Headers({ "user-agent": "workers-oci" });
-    if (credential !== null) {
+    let init: RequestInit = { headers };
+
+    if (credential?.identityToken !== undefined) {
+      // A refresh token is POSTed as a grant, not presented as a password. The
+      // registries that issue one store a placeholder UUID as the username, so
+      // sending it as Basic gets a 401 that reads as a wrong credential.
+      headers.set("content-type", "application/x-www-form-urlencoded");
+      const form = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: credential.identityToken,
+        client_id: "workers-oci",
+      });
+      for (const key of ["service", "scope"]) {
+        const value = params.get(key);
+        if (value !== undefined) form.set(key, value);
+      }
+      init = { method: "POST", headers, body: form };
+    } else if (credential !== null) {
       const basic = Buffer.from(`${credential.username}:${credential.password}`).toString("base64");
       headers.set("authorization", `Basic ${basic}`);
     }
 
     // An anonymous pull from a public repository still goes through the token
     // endpoint, so a missing credential is not a failure here.
-    const response = await fetch(url, { headers });
-    if (!response.ok) return false;
+    const response = await fetch(url, init);
+    if (!response.ok) {
+      /*
+       * THE ONE PLACE THAT KNOWS WHY AUTH FAILED, and it used to say nothing.
+       * `return false` sent the caller back to report the registry's original
+       * 401, so `insufficient_scope`, an expired ECR token and a wrong service
+       * were all indistinguishable from a wrong password.
+       */
+      const detail = (await response.text().catch(() => "")).slice(0, 300);
+      throw new Error(
+        `the registry's token endpoint refused: ${response.status} ${response.statusText}${detail === "" ? "" : ` — ${detail}`}`.replace(
+          " — ",
+          ": ",
+        ),
+      );
+    }
 
-    const body = (await response.json()) as { token?: string; access_token?: string };
+    const body = (await response.json().catch(() => ({}))) as { token?: string; access_token?: string };
     const token = body.token ?? body.access_token;
     if (token === undefined) return false;
 
@@ -193,10 +224,20 @@ export class Registry {
 
     // Parsed loosely first: what came back is whatever the registry holds, and
     // an index has to be recognised before it is treated as a manifest.
-    const parsed = JSON.parse(new TextDecoder().decode(raw)) as {
-      mediaType?: string;
-      manifests?: unknown[];
-    };
+    //
+    // The guard is for the body that is not JSON at all. A proxy login page or
+    // an HTML redirect surfaced as `Unrecognized token '<'` with no URL and no
+    // content type, which says nothing about where the request actually went.
+    const text = new TextDecoder().decode(raw);
+    let parsed: { mediaType?: string; manifests?: unknown[] };
+    try {
+      parsed = JSON.parse(text) as { mediaType?: string; manifests?: unknown[] };
+    } catch {
+      const type = response.headers.get("content-type") ?? "no content type";
+      throw new Error(
+        `${repository}:${reference} did not answer with a manifest (${type}): ${text.slice(0, 200)}`,
+      );
+    }
     if (parsed.mediaType === INDEX_TYPE || Array.isArray(parsed.manifests)) {
       throw new Error(
         `${repository}:${reference} is an index, not a worker-app manifest. A worker-app is one artifact with no platform variants.`,

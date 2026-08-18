@@ -12,7 +12,19 @@ import { execFileSync } from "node:child_process";
  * needs its own login command.
  */
 
-export type Credential = { readonly username: string; readonly password: string };
+export type Credential = {
+  readonly username: string;
+  readonly password: string;
+  /**
+   * A refresh token, when the registry issued one instead of a password.
+   *
+   * ACR, Quay and GitLab write `auth` as base64 of a placeholder UUID and an
+   * empty password, with the real credential under `identitytoken`. The token
+   * endpoint takes it as `grant_type=refresh_token` rather than as Basic auth,
+   * so it travels separately.
+   */
+  readonly identityToken?: string;
+};
 
 export type CredentialSource = {
   readonly username?: string | undefined;
@@ -43,11 +55,22 @@ const readConfig = (): DockerConfig => {
  * lookup for `registry-1.docker.io` has to try that spelling too.
  */
 const keysFor = (registry: string): string[] =>
-  registry === "registry-1.docker.io" || registry === "docker.io"
+  registry === "registry-1.docker.io" || registry === "docker.io" || registry === "index.docker.io"
     ? ["https://index.docker.io/v1/", "index.docker.io", "docker.io", "registry-1.docker.io"]
     : [registry, `https://${registry}`, `${registry}/`];
 
+/**
+ * A credential helper is a program name and nothing else.
+ *
+ * It comes from a file, and `execFile` resolves a name holding a slash against
+ * the working directory rather than against PATH. That needs an already-hostile
+ * `~/.docker/config.json` to matter, so this is depth rather than a hole, and it
+ * is one line.
+ */
+const HELPER = /^[A-Za-z0-9._-]+$/;
+
 const fromHelper = (helper: string, registry: string): Credential | null => {
+  if (!HELPER.test(helper)) return null;
   try {
     const out = execFileSync(`docker-credential-${helper}`, ["get"], {
       input: registry,
@@ -83,9 +106,37 @@ export const credentialFor = (registry: string, explicit?: CredentialSource): Cr
     }
   }
 
+  /*
+   * THE STORE BEFORE `auths`, which is the order Docker resolves in and the
+   * reverse of what this did. It is invisible in the common case, because
+   * `docker login` writes an empty `"auths": {"ghcr.io": {}}` entry beside a
+   * configured store and the empty entry falls through. It stops being
+   * invisible when an `auth` blob written before the store was configured, or
+   * one podman or oras left behind, sits next to a live keychain: the stale
+   * value won here and the push 401d while `docker push` to the same registry
+   * worked.
+   */
+  if (config.credsStore !== undefined) {
+    for (const key of keysFor(registry)) {
+      const found = fromHelper(config.credsStore, key);
+      if (found !== null) return found;
+    }
+  }
+
   for (const key of keysFor(registry)) {
     const entry = config.auths?.[key];
     if (entry === undefined) continue;
+
+    /*
+     * An `identitytoken` is a REFRESH TOKEN and not a password. ACR, Quay and
+     * GitLab write `auth` as base64 of the placeholder UUID and an empty
+     * password, with the real credential beside it under this key. Returning
+     * the UUID gets a 401 that reads as a wrong password, so the token is
+     * carried through and `registry.ts` exchanges it at the token endpoint.
+     */
+    if (entry.identitytoken !== undefined && entry.identitytoken !== "") {
+      return { username: "<token>", password: "", identityToken: entry.identitytoken };
+    }
 
     if (entry.auth !== undefined && entry.auth !== "") {
       const decoded = Buffer.from(entry.auth, "base64").toString("utf8");
@@ -96,13 +147,6 @@ export const credentialFor = (registry: string, explicit?: CredentialSource): Cr
     }
     if (entry.username !== undefined && entry.password !== undefined) {
       return { username: entry.username, password: entry.password };
-    }
-  }
-
-  if (config.credsStore !== undefined) {
-    for (const key of keysFor(registry)) {
-      const found = fromHelper(config.credsStore, key);
-      if (found !== null) return found;
     }
   }
 

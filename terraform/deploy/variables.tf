@@ -26,8 +26,12 @@ variable "artifact" {
 
 variable "name" {
   description = <<-EOT
-    Script name. With several workers in the artifact it is the prefix, and each
-    worker's own name is appended.
+    Script name.
+
+    A worker whose own name equals the artifact's name is deployed under this
+    unchanged; every other worker is deployed as `<name>-<worker name>`. The
+    rule reads only that one worker's name and not how many the artifact ships,
+    so adding a second worker never renames the first.
 
     Defaults to the artifact's name. Set it to run two installations of one
     artifact in an account.
@@ -50,8 +54,14 @@ variable "bindings" {
     objects are passed to the provider unchanged, so anything the Cloudflare
     bindings API accepts works here, including kinds this project has no opinion
     about.
+
+    Typed `any` and not `map(any)` for that last sentence to be true. `map(any)`
+    unifies every value to ONE type, so a `ratelimit` binding carrying a `simple`
+    object next to a `d1` binding carrying a string id was rejected outright with
+    "all map elements must have the same type". A kind the artifact schema
+    declares could not be deployed at all.
   EOT
-  type        = map(any)
+  type        = any
   default     = {}
 }
 
@@ -150,8 +160,14 @@ variable "dead_letter_queues" {
 }
 
 variable "consumer_settings" {
-  description = "Per queue binding, passed to the consumer as given: batch_size, max_retries, max_wait_time_ms, retry_delay."
-  type        = map(any)
+  description = <<-EOT
+    Per queue binding, passed to the consumer as given: batch_size, max_retries,
+    max_wait_time_ms, retry_delay.
+
+    `any` rather than `map(any)`, which would force every queue's entry to carry
+    the same keys as every other queue's.
+  EOT
+  type        = any
   default     = {}
 }
 
@@ -172,12 +188,6 @@ variable "rollout_percentage" {
   }
 }
 
-variable "limits" {
-  description = "CPU and memory limits per worker name, passed to the provider as given."
-  type        = map(any)
-  default     = {}
-}
-
 variable "extra_bindings" {
   description = <<-EOT
     Bindings the artifact does not declare, per worker name. Service bindings,
@@ -187,8 +197,12 @@ variable "extra_bindings" {
     resource name is an error rather than a silent extra binding. These are
     passed to the provider unchanged, so anything the Cloudflare bindings API
     accepts works.
+
+    `any` for the same reason as `bindings`: `map(list(any))` made every entry in
+    one worker's list unify to a single type, which rejected a service binding
+    and a dispatch namespace binding in the same list.
   EOT
-  type        = map(list(any))
+  type        = any
   default     = {}
 }
 

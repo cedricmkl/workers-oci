@@ -19,8 +19,35 @@ export type Reference = {
 };
 
 const DEFAULT_REGISTRY = "registry-1.docker.io";
-const DIGEST = /^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[a-zA-Z0-9=_-]+$/;
+
+/**
+ * The spellings of Docker Hub that carry no v2 API.
+ *
+ * `docker.io` and `index.docker.io` are what a person writes and what
+ * `docker pull` accepts, and neither serves `/v2/`. A request to `docker.io`
+ * follows a 301 to the marketing site and fails on `JSON Parse error:
+ * Unrecognized token '<'`, which reads as a broken registry.
+ */
+const DOCKER_HUB = new Set(["docker.io", "index.docker.io", "registry-1.docker.io"]);
+
+/**
+ * `sha256:` and 64 lowercase hex, which is the only algorithm this tool computes.
+ *
+ * The distribution grammar is wider and permits uppercase hex, but `digestOf`
+ * produces lowercase and `pullBlob` compares the two strings, so a correctly
+ * written uppercase digest failed with "blob digest mismatch" and read as
+ * tampering. The old pattern also accepted `sha256:ff`.
+ */
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const TAG = /^[\w][\w.-]{0,127}$/;
+
+/**
+ * One path component of a repository name, per the distribution reference
+ * grammar. Lowercase alphanumerics with single separators between them, which
+ * is why `GHCR.IO/Example/App` is not a reference: it produces a `/v2/` URL the
+ * registry answers with an error that reads as a server fault.
+ */
+const COMPONENT = /^[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*$/;
 
 /**
  * A first path component is a registry when it carries a dot or a colon, or when
@@ -59,11 +86,22 @@ export const parseReference = (input: string): Reference => {
   const head = parts[0] ?? "";
   const hasRegistry = parts.length > 1 && looksLikeHost(head);
 
-  const registry = hasRegistry ? head : DEFAULT_REGISTRY;
+  // A host is case-insensitive and the API path is not, so the host is lowered
+  // and the repository is left exactly as written for the check below.
+  const written = hasRegistry ? head.toLowerCase() : DEFAULT_REGISTRY;
+  const registry = DOCKER_HUB.has(written) ? DEFAULT_REGISTRY : written;
   let repository = hasRegistry ? parts.slice(1).join("/") : rest;
 
   if (repository === "") throw new Error(`no repository in reference: ${original}`);
   if (!hasRegistry && !repository.includes("/")) repository = `library/${repository}`;
+
+  for (const component of repository.split("/")) {
+    if (!COMPONENT.test(component)) {
+      throw new Error(
+        `not a repository name: ${repository}. Each component is lowercase alphanumerics with single separators between them, so ${JSON.stringify(component)} does not fit.`,
+      );
+    }
+  }
 
   if (tag === undefined && digest === undefined) tag = "latest";
 

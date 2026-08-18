@@ -237,7 +237,13 @@ output "bindings" {
   value = merge(
     { for k, v in cloudflare_d1_database.this : k => { type = "d1", name = k, id = v.id } },
     { for k, v in cloudflare_workers_kv_namespace.this : k => { type = "kv_namespace", name = k, namespace_id = v.id } },
-    { for k, v in cloudflare_r2_bucket.this : k => { type = "r2_bucket", name = k, bucket_name = v.name } },
+    # `jurisdiction` rides along when the bucket has one. A bucket created in a
+    # jurisdiction lives in a separate namespace, so a binding that names only
+    # the bucket resolves against the default one and does not find it.
+    { for k, v in cloudflare_r2_bucket.this : k => merge(
+      { type = "r2_bucket", name = k, bucket_name = v.name },
+      try(var.r2[k].jurisdiction, null) == null ? {} : { jurisdiction = var.r2[k].jurisdiction },
+    ) },
     { for k, v in cloudflare_queue.this : k => { type = "queue", name = k, queue_name = v.queue_name } },
   )
 }

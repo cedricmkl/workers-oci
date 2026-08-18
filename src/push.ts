@@ -47,6 +47,9 @@ export const push = async (options: PushOptions): Promise<{ digest: string; refe
   const digest = await registry.pushManifest(ref.repository, primary, manifest);
 
   for (const tag of options.also ?? []) {
+    // Checked like the primary tag rather than trusted. An extra tag goes
+    // straight into a URL path segment, and `parseReference` never sees it.
+    if (!/^[\w][\w.-]{0,127}$/.test(tag)) throw new Error(`not a tag: ${tag}`);
     await registry.pushManifest(ref.repository, tag, manifest);
   }
 

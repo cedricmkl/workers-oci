@@ -19,9 +19,19 @@ terraform {
 }
 
 locals {
-  # `try` rather than `coalesce`, which evaluates every argument: with an
-  # artifact passed in, the file need not exist at all.
-  artifact = var.artifact != null ? var.artifact : jsondecode(file("${var.artifact_dir}/worker-app.json"))
+  # `try` and NOT `? :`. A conditional has to give both branches a consistent
+  # type, and it types the branch it will not take. So passing an artifact from
+  # anywhere other than this exact file, which is the whole reason `artifact` is
+  # a variable, failed the entire plan with "Inconsistent conditional result
+  # types" over an attribute of a document nobody was going to read. A remote
+  # state output, a document assembled in the calling configuration, or the same
+  # artifact carrying one optional key more were all enough to trip it.
+  #
+  # `coalesce` with the one argument raises when it is null, which is what makes
+  # `try` fall through to the file. The file is read only in that case, and a
+  # malformed or missing one still raises rather than being swallowed, because
+  # there is no third argument to fall through to.
+  artifact = try(coalesce(var.artifact), jsondecode(file("${var.artifact_dir}/worker-app.json")))
 
   app     = coalesce(var.name, local.artifact.name)
   workers = local.artifact.workers
@@ -163,14 +173,27 @@ locals {
     bin  = "application/octet-stream"
   }
 
+  # The directory each entry module sits in. `./dist/index.js` and `dist/index.js`
+  # name the same directory, so the leading `./` comes off before `dirname`.
+  entry_dir = { for w in local.workers : w.name => dirname(trimprefix(w.main, "./")) }
+
   # Module names are relative to the ENTRY MODULE's directory, not flattened to a
   # basename. A bundle whose entry imports `./lib/util.js` needs that specifier
   # to still resolve after upload, and two files sharing a basename in different
   # directories would otherwise collide into one name.
+  #
+  # `trimprefix` and not `replace`: `replace` swaps EVERY occurrence, so under an
+  # entry at `dist/index.js` a module at `dist/x/dist/y.js` came out as `x/y.js`,
+  # which is the wrong specifier AND collides with a real `dist/x/y.js`. An entry
+  # at the layer root has `dirname` == "." and its siblings are already correctly
+  # named, so nothing is stripped in that case.
   modules = {
     for w in local.workers : w.name => [
       for m in concat([{ path = w.main }], try(w.modules, [])) : {
-        name         = trimprefix(replace(m.path, "${dirname(w.main)}/", ""), "./")
+        name = trimprefix(
+          trimprefix(m.path, "./"),
+          local.entry_dir[w.name] == "." ? "" : "${local.entry_dir[w.name]}/",
+        )
         content_type = try(m.content_type, local.content_type[regex("[^.]*$", m.path)], "application/octet-stream")
         content_file = "${var.artifact_dir}/${m.path}"
       }

@@ -85,3 +85,42 @@ describe("schemeFor", () => {
     expect(schemeFor("127.0.0.1:5000")).toBe("http");
   });
 });
+
+/**
+ * Spellings that used to parse into something the registry cannot serve.
+ */
+describe("hosts and names the grammar rules out", () => {
+  test.each(["docker.io/library/alpine", "index.docker.io/library/alpine"])(
+    "%s resolves to the host that actually serves /v2/",
+    (input) => {
+      // Neither of these serves the v2 API. Following the 301 lands on a
+      // marketing page and fails on `Unrecognized token '<'`.
+      expect(parseReference(input).registry).toBe("registry-1.docker.io");
+    },
+  );
+
+  test("a host is lowercased", () => {
+    expect(parseReference("GHCR.IO/example/app:v1").registry).toBe("ghcr.io");
+  });
+
+  test.each([
+    ["an uppercase path component", "ghcr.io/Example/App:v1"],
+    ["a trailing slash", "ghcr.io/example/app/:v1"],
+    ["an empty component", "ghcr.io//app:v1"],
+  ])("refuses %s", (_label, input) => {
+    expect(() => parseReference(input)).toThrow(/not a repository name/);
+  });
+
+  test.each([
+    ["a digest that is too short", "ghcr.io/example/app@sha256:ff"],
+    ["a digest in another algorithm", "ghcr.io/example/app@md5:" + "a".repeat(32)],
+  ])("refuses %s", (_label, input) => {
+    expect(() => parseReference(input)).toThrow(/not a digest/);
+  });
+
+  test("refuses an uppercase digest rather than failing later as a mismatch", () => {
+    // `digestOf` produces lowercase hex and `pullBlob` compares the strings, so
+    // this used to parse and then report tampering on a correct artifact.
+    expect(() => parseReference(`ghcr.io/example/app@sha256:${"A".repeat(64)}`)).toThrow(/not a digest/);
+  });
+});

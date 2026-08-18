@@ -15,7 +15,8 @@ pull in whatever wraps your `plan` and `apply`.
 
 ## terraform/resources
 
-Creates what the artifact declares and hands back binding objects.
+Creates the d1, kv, r2 and queue bindings you list in `names`, and hands back
+binding objects for them.
 
 ```hcl
 module "resources" {
@@ -36,10 +37,19 @@ module "resources" {
 | `account_id` | |
 | `artifact` | the decoded config document |
 | `names` | binding -> resource name, for the bindings this module should create |
-| `prevent_destroy` | guard against replacement, default true |
+| `d1` | per D1 binding: `read_replication`, default `disabled`, and `primary_location_hint` |
+| `r2` | per R2 binding: `location`, `storage_class` and `jurisdiction`, all fixed at creation |
+| `queues` | per queue binding: `message_retention_period` and `delivery_delay`, in seconds |
 
-A binding the artifact declares and `names` omits is left alone. Create it
-elsewhere and pass it straight to `deploy`.
+`names` decides what gets created. A binding the artifact declares and `names`
+omits is left alone: create it elsewhere and pass it straight to `deploy`. Naming
+a binding of any other kind fails the plan with `names covers bindings with no
+resource to create`, since an assets binding is part of the worker version and
+the remaining kinds carry no account-level resource. A name the artifact never
+declared fails it as well.
+
+For each queue it creates that a consumer marks `dead_letter`, the module also
+creates `<queue name>-dlq`.
 
 | output | |
 |---|---|
@@ -48,9 +58,13 @@ elsewhere and pass it straight to `deploy`.
 | `dead_letter_queues` | dead letter queue name per binding |
 | `resources` | kind, name and id per binding |
 
-`prevent_destroy` is on by default because renaming a D1 database or a queue
-plans as a replace, and a replaced KV namespace comes back empty. Turn it off for
-an environment that is meant to be thrown away.
+Every resource here carries `prevent_destroy`, unconditionally, and there is no
+variable for it. `prevent_destroy` takes a literal only, so a variable would mean
+two copies of every resource at two addresses and a flip that moves the resource
+between them: switching the flag on destroys the database it claims to protect,
+and switching it off afterwards is refused. To take a resource down on purpose,
+remove it from `names`, run `tofu state rm` on the address, then delete it by
+hand.
 
 ## terraform/deploy
 
@@ -63,8 +77,9 @@ module "deploy" {
   account_id   = var.account_id
   artifact_dir = ".artifact/v1"
 
-  bindings  = module.resources.bindings
-  queue_ids = module.resources.queue_ids
+  bindings           = module.resources.bindings
+  queue_ids          = module.resources.queue_ids
+  dead_letter_queues = module.resources.dead_letter_queues
 
   vars    = { PUBLIC_URL = "https://app.example.com" }
   secrets = { API_KEY = var.api_key }
@@ -78,16 +93,42 @@ module "deploy" {
 |---|---|
 | `account_id`, `artifact_dir` | |
 | `artifact` | the decoded document; read from `artifact_dir` when omitted |
-| `name` | script name, or prefix when the artifact ships several workers |
+| `name` | script name, defaulting to the artifact's name |
 | `bindings` | binding object per binding name |
+| `extra_bindings` | worker name -> binding objects the artifact does not declare |
 | `vars` | plain values by name |
 | `secrets` | secret values by name, sensitive |
 | `secrets_store` | Secrets Store references by name |
 | `generate_secrets` | create values for `generate` secrets, default true |
 | `zone_id`, `domains`, `routes`, `workers_dev` | routing |
+| `previews_enabled` | per-version preview URLs, with `workers_dev` on. Default false. |
 | `queue_ids`, `dead_letter_queues`, `consumer_settings` | queues |
 | `rollout_percentage` | share of traffic the new version takes, default 100 |
-| `limits` | CPU and memory per worker |
+| `observability` | Workers Logs: `enabled` and `head_sampling_rate`. Off by default, matching the platform. |
+| `logpush` | default false |
+| `tags` | Cloudflare-side tags on each worker |
+| `tail_consumers` | workers receiving this worker's trace events, as `[{ name = "..." }]` |
+| `message` | shown against the version in the dashboard: a release note, or what triggered the deploy |
+| `tag` | stamped on the version. Pass the artifact's OCI tag, so a version traces back to what produced it. |
+
+`observability`, `workers_dev`, `previews_enabled`, `logpush`, `tags` and
+`tail_consumers` are written on every apply. The provider does not read an absent
+value as "keep what is there", so leaving one out turns it off.
+
+A worker whose own name equals the artifact's `name` is deployed as `name`
+unchanged. Every other worker is deployed as `<name>-<worker name>`. The rule
+reads that one worker's name and nothing else, so adding a second worker to an
+artifact never renames the first, and a Worker rename takes its routes, its
+domains and its analytics with it.
+
+CPU limits and placement come from the artifact, as `runtime.limits.cpu_ms` and
+`runtime.placement.mode`. Both describe the code rather than the deployment.
+
+| output | |
+|---|---|
+| `workers` | per worker name: the script `name`, the worker `id`, the live `version_id`, and its `hostnames` and `routes` |
+| `app` | the deployment name and the worker names the artifact ships |
+| `generated_secrets` | values created for the artifact's `generate` secrets, by name. Sensitive. |
 
 ### Binding objects
 
@@ -103,6 +144,16 @@ bindings = {
 }
 ```
 
+`bindings` is checked against the artifact, so a typo is an error rather than a
+silent extra binding. Bindings joining this app to another go in
+`extra_bindings`, keyed by worker name and unchecked:
+
+```hcl
+extra_bindings = {
+  api = [{ type = "service", name = "AUTH", service = "auth-worker" }]
+}
+```
+
 ### Checks at plan time
 
 `deploy` refuses to plan when the artifact declares something the deployment does
@@ -114,9 +165,16 @@ Each needs an entry in `secrets`, an entry in `secrets_store`, or a `generate`
 block in the artifact.
 ```
 
-It also refuses a `bindings` entry the artifact never declared, a hostname
-pointed at a worker marked `routable: false`, a worker consuming a queue with no
-id, and an artifact declaring Durable Objects.
+It also refuses:
+
+- an artifact whose `schema_version` is not 1
+- a binding or a variable the artifact declares with nowhere to come from
+- a `bindings` entry the artifact never declared
+- `domains` or `routes` without a `zone_id`
+- routing configured for a worker the artifact does not ship
+- a hostname pointed at a worker marked `routable: false`
+- a worker consuming a queue with no id in `queue_ids`
+- an artifact declaring Durable Objects
 
 ## Secrets
 
@@ -142,7 +200,7 @@ changed. Encrypt state, or use `secrets_store`.
 ### Why a secret cannot be left out of Terraform
 
 A worker version lists its bindings exhaustively. A version created by Terraform
-drops any secret it does not name, silently: the secret is simply absent from the
+drops any secret it does not name, silently: the secret is absent from the
 new version, with nothing in the plan to say so.
 
 The `inherit` binding type exists for this, and is unusable from Terraform. The
@@ -171,5 +229,6 @@ decision.
 
 ## A worked example
 
-[examples/compose](../examples/compose) composes both modules, binds one resource
-the module does not own, and plans without credentials.
+[examples/compose](../examples/compose) composes both modules and binds one
+resource the modules do not own. CI plans it with `CLOUDFLARE_API_TOKEN` set to a
+dummy value, checking that every binding, variable and secret resolves.

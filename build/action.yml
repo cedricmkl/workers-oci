@@ -1,0 +1,134 @@
+# Build a worker-app artifact from a config document.
+#
+# A STEP, not a job. The caller owns the job, which is the whole point: a
+# repository that has to federate into AWS before it can reach ECR, install a
+# private dependency, or bundle with something other than the default puts those
+# steps first and calls this one after. A wrapper that owns the job has no seam
+# to put them in.
+#
+#   - uses: cedricmkl/workers-oci/build@v1
+#     with:
+#       version: ${{ github.ref_name }}
+#
+# Pair it with cedricmkl/workers-oci/push.
+
+name: Build a worker-app artifact
+description: Package a Cloudflare Worker and the resources it binds to as an OCI artifact.
+
+inputs:
+  config:
+    description: Path to the config document.
+    required: false
+    default: worker-app.json
+  root:
+    description: Directory the document's paths are relative to. Defaults to the document's own directory.
+    required: false
+    default: ""
+  out:
+    description: Directory to write the artifact into.
+    required: false
+    default: .artifact
+  version:
+    description: Version to record. Defaults to the tag that triggered the run, when there is one.
+    required: false
+    default: ""
+  revision:
+    description: Commit the build came from. Defaults to the checked-out HEAD.
+    required: false
+    default: ""
+  source:
+    description: >-
+      Repository URL, recorded as provenance and part of the manifest digest.
+      Defaults to this repository. Spellings are canonicalised, so ssh and https
+      forms of one repository agree.
+    required: false
+    default: ""
+  created:
+    description: >-
+      RFC 3339 timestamp for every file in the layer. Defaults to the commit
+      timestamp, which is what makes two builds of one commit agree.
+    required: false
+    default: ""
+  include:
+    description: Extra paths to ship, whitespace separated. A source map is the usual one.
+    required: false
+    default: ""
+  setup-bun:
+    description: Install bun. Set false when the job already has it.
+    required: false
+    default: "true"
+
+outputs:
+  digest:
+    description: Manifest digest of the built artifact.
+    value: ${{ steps.build.outputs.digest }}
+  version:
+    description: Version it was built as.
+    value: ${{ steps.build.outputs.version }}
+  directory:
+    description: Where the artifact was written.
+    value: ${{ inputs.out }}
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.setup-bun == 'true'
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: latest
+
+    - id: build
+      shell: bash
+      env:
+        # `github.action_path` is this action's own checkout, so the CLI runs
+        # from the same commit as the action. No package registry involved, and
+        # the tool cannot drift from the action that documents it.
+        WORKERS_OCI_SRC: ${{ github.action_path }}/../src/cli.ts
+        IN_CONFIG: ${{ inputs.config }}
+        IN_ROOT: ${{ inputs.root }}
+        IN_OUT: ${{ inputs.out }}
+        IN_VERSION: ${{ inputs.version }}
+        IN_REVISION: ${{ inputs.revision }}
+        IN_SOURCE: ${{ inputs.source }}
+        IN_CREATED: ${{ inputs.created }}
+        IN_INCLUDE: ${{ inputs.include }}
+      run: |
+        set -euo pipefail
+
+        version="$IN_VERSION"
+        if [ -z "$version" ]; then
+          case "$GITHUB_REF" in
+            refs/tags/*) version="$GITHUB_REF_NAME" ;;
+            *) echo "::error::no version given and this run was not triggered by a tag"; exit 1 ;;
+          esac
+        fi
+
+        # `if` and not `[ -n x ] && args+=(...)`. Under `set -e` a failing test
+        # is the compound's exit status, so the last such line silently ends the
+        # step with success and nothing after it runs.
+        args=(build --config "$IN_CONFIG" --out "$IN_OUT" --version "$version")
+        if [ -n "$IN_ROOT" ];     then args+=(--root "$IN_ROOT"); fi
+        if [ -n "$IN_REVISION" ]; then args+=(--revision "$IN_REVISION"); fi
+        if [ -n "$IN_CREATED" ];  then args+=(--created "$IN_CREATED"); fi
+
+        # Defaulted here rather than left to git, because a runner's checkout
+        # remote is whatever the workflow cloned with and the URL is part of the
+        # manifest digest.
+        source="$IN_SOURCE"
+        if [ -z "$source" ]; then source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"; fi
+        args+=(--source "$source")
+
+        # Unquoted on purpose: whitespace separates the paths.
+        # shellcheck disable=SC2086
+        for path in $IN_INCLUDE; do args+=(--include "$path"); done
+
+        bun run "$WORKERS_OCI_SRC" "${args[@]}"
+
+        # Read off disk rather than built a second time. `manifest.json` is
+        # written as the exact bytes that get pushed, so its sha256 IS the
+        # manifest digest, and taking it this way exercises that property on
+        # every release.
+        digest="sha256:$(sha256sum "$IN_OUT/manifest.json" | cut -d' ' -f1)"
+
+        echo "digest=$digest" >> "$GITHUB_OUTPUT"
+        echo "version=$version" >> "$GITHUB_OUTPUT"

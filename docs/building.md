@@ -187,6 +187,33 @@ Ship anything else on purpose with `--include`, a source map included:
 workers-oci build --config worker-app.json --out .artifact --include LICENSE
 ```
 
+## In CI
+
+Two composite actions. They are steps, so the job stays yours: federate into AWS,
+install a private dependency, bundle however you like, then call them.
+
+```yaml
+- uses: cedricmkl/workers-oci/build@v1
+  id: build
+  with:
+    version: ${{ github.ref_name }}
+
+- uses: cedricmkl/workers-oci/push@v1
+  id: push
+  with:
+    reference: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+    password: ${{ secrets.GITHUB_TOKEN }}
+```
+
+`push` outputs `digest` and `reference`, and writes the reference and what the
+artifact declares into the run summary.
+
+The CLI runs from the action's own checkout, so the tool and the action that
+documents it are the same commit and no package registry is involved.
+
+`.github/workflows/release.yml` wraps both as a whole job for the case they cover
+completely: one bundle command, a registry that takes a username and a password.
+
 ## Building
 
 ```

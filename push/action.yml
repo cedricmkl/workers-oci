@@ -1,0 +1,115 @@
+# Publish a worker-app artifact to an OCI registry.
+#
+# A STEP, so whatever the registry needs comes first in the caller's job. ECR
+# wants an AWS federation and a login password; ghcr.io wants the job's
+# GITHUB_TOKEN; a private registry wants whatever it wants. This action takes a
+# username and a password and does not care where they came from.
+#
+#   - uses: cedricmkl/workers-oci/push@v1
+#     with:
+#       reference: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+#       password: ${{ secrets.GITHUB_TOKEN }}
+
+name: Push a worker-app artifact
+description: Publish a built worker-app artifact to any OCI registry.
+
+inputs:
+  reference:
+    description: Where to push, as registry/repository:tag.
+    required: true
+  directory:
+    description: The artifact directory that build wrote.
+    required: false
+    default: .artifact
+  tags:
+    description: Extra tags for the same manifest, whitespace separated.
+    required: false
+    default: ""
+  username:
+    description: Registry username. Defaults to the GitHub actor, which is what ghcr.io expects.
+    required: false
+    default: ""
+  password:
+    description: >-
+      Registry password or token. Falls back to the credential helpers and
+      ~/.docker/config.json when empty, so a job that already ran `docker login`
+      or `oras login` needs nothing here.
+    required: false
+    default: ""
+  setup-bun:
+    description: Install bun. Set false when the job already has it.
+    required: false
+    default: "true"
+
+outputs:
+  digest:
+    description: Manifest digest the registry now holds.
+    value: ${{ steps.push.outputs.digest }}
+  reference:
+    description: The full reference, tag and digest together. This is what an installation pins.
+    value: ${{ steps.push.outputs.reference }}
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.setup-bun == 'true'
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: latest
+
+    - id: push
+      shell: bash
+      env:
+        WORKERS_OCI_SRC: ${{ github.action_path }}/../src/cli.ts
+        IN_REFERENCE: ${{ inputs.reference }}
+        IN_DIRECTORY: ${{ inputs.directory }}
+        IN_TAGS: ${{ inputs.tags }}
+        # Through the environment, never an argument. A password in argv is
+        # readable by every process on the runner and is echoed whenever the
+        # command is printed.
+        WORKERS_OCI_REGISTRY_USER: ${{ inputs.username || github.actor }}
+        WORKERS_OCI_REGISTRY_PASSWORD: ${{ inputs.password }}
+      run: |
+        set -euo pipefail
+
+        args=(push "$IN_DIRECTORY" "$IN_REFERENCE")
+        # shellcheck disable=SC2086
+        for tag in $IN_TAGS; do args+=(--tag "$tag"); done
+
+        # An empty password means "look in the credential store", which is a
+        # different thing from an empty password, so the variable is unset
+        # rather than passed through blank.
+        if [ -z "${WORKERS_OCI_REGISTRY_PASSWORD:-}" ]; then
+          unset WORKERS_OCI_REGISTRY_PASSWORD WORKERS_OCI_REGISTRY_USER
+        fi
+
+        digest="$(bun run "$WORKERS_OCI_SRC" "${args[@]}")"
+
+        echo "digest=$digest" >> "$GITHUB_OUTPUT"
+        echo "reference=$IN_REFERENCE@$digest" >> "$GITHUB_OUTPUT"
+
+    - name: summary
+      shell: bash
+      env:
+        WORKERS_OCI_SRC: ${{ github.action_path }}/../src/cli.ts
+        IN_DIRECTORY: ${{ inputs.directory }}
+        REFERENCE: ${{ steps.push.outputs.reference }}
+      run: |
+        set -euo pipefail
+        {
+          echo '### Published'
+          echo
+          echo 'Pin this release with:'
+          echo
+          echo '```'
+          echo "$REFERENCE"
+          echo '```'
+          echo
+          echo '<details><summary>What the artifact declares</summary>'
+          echo
+          echo '```'
+          bun run "$WORKERS_OCI_SRC" inspect "$IN_DIRECTORY"
+          echo '```'
+          echo
+          echo '</details>'
+        } >> "$GITHUB_STEP_SUMMARY"

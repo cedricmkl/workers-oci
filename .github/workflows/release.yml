@@ -1,19 +1,26 @@
-# Build a worker-app artifact and publish it.
+# Build a worker-app artifact and publish it, as a whole job.
 #
-# Call it from a repository that holds a Worker:
+# THE ACTIONS ARE THE INTERFACE. This is a thin caller of `build` and `push` for
+# the case they cover completely: a repository with one bundle command pushing to
+# a registry that takes a username and a password. It owns the job, so there is
+# nowhere to put a step it did not anticipate.
 #
 #   jobs:
 #     release:
-#       uses: cedricmkl/workers-oci/.github/workflows/release.yml@v0.1.0
-#       permissions:
-#         contents: read
-#         packages: write
+#       uses: cedricmkl/workers-oci/.github/workflows/release.yml@v1
+#       permissions: { contents: read, packages: write }
 #       with:
 #         registry: ghcr.io
 #         repository: ${{ github.repository }}
 #
-# It writes the version and digest into the run summary, ready to paste into
-# whatever pins the release.
+# Reach for the actions directly the moment you need a step before the push:
+# federating into AWS for ECR, installing a private dependency, bundling with
+# something the `build-command` input cannot express.
+#
+#   - uses: cedricmkl/workers-oci/build@v1
+#     with: { version: ${{ github.ref_name }} }
+#   - uses: cedricmkl/workers-oci/push@v1
+#     with: { reference: ..., password: ... }
 
 name: release
 
@@ -39,7 +46,11 @@ on:
       root:
         description: Directory the document's paths are relative to.
         type: string
-        default: "."
+        default: ""
+      include:
+        description: Extra paths to ship, whitespace separated.
+        type: string
+        default: ""
       build-command:
         description: Command that produces the bundle. Skipped when empty.
         type: string
@@ -48,13 +59,9 @@ on:
         type: string
         default: bun install --frozen-lockfile
       also-tag:
-        description: Extra tags for the same manifest, space separated.
+        description: Extra tags for the same manifest, whitespace separated.
         type: string
         default: ""
-      workers-oci-version:
-        description: Version of the workers-oci CLI to run.
-        type: string
-        default: latest
       environment:
         type: string
         default: ""
@@ -86,7 +93,7 @@ jobs:
 
     outputs:
       digest: ${{ steps.push.outputs.digest }}
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ steps.build.outputs.version }}
       reference: ${{ steps.push.outputs.reference }}
 
     steps:
@@ -96,24 +103,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Checked out beside the caller's tree, because the actions run from source
+      # and `uses:` alone would not give the workflow a path to them.
+      - uses: actions/checkout@v4
+        with:
+          repository: cedricmkl/workers-oci
+          ref: ${{ github.workflow_sha }}
+          path: .workers-oci
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-
-      - id: version
-        run: |
-          version='${{ inputs.version }}'
-          if [ -z "$version" ]; then
-            version="${GITHUB_REF_NAME}"
-          fi
-          case "$GITHUB_REF" in
-            refs/tags/*) : ;;
-            *) if [ -z '${{ inputs.version }}' ]; then
-                 echo "::error::no version given and this run was not triggered by a tag"
-                 exit 1
-               fi ;;
-          esac
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - if: inputs.install-command != ''
         run: ${{ inputs.install-command }}
@@ -121,44 +121,20 @@ jobs:
       - if: inputs.build-command != ''
         run: ${{ inputs.build-command }}
 
-      - name: build the artifact
-        id: build
-        run: |
-          bunx --bun @cedricmkl/workers-oci@${{ inputs.workers-oci-version }} build \
-            --config '${{ inputs.config }}' \
-            --root '${{ inputs.root }}' \
-            --out .artifact \
-            --version '${{ steps.version.outputs.version }}' \
-            --source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+      - id: build
+        uses: ./.workers-oci/build
+        with:
+          config: ${{ inputs.config }}
+          root: ${{ inputs.root }}
+          version: ${{ inputs.version }}
+          include: ${{ inputs.include }}
+          setup-bun: "false"
 
-      - name: push
-        id: push
-        env:
-          WORKERS_OCI_REGISTRY_USER: ${{ secrets.registry-username || github.actor }}
-          WORKERS_OCI_REGISTRY_PASSWORD: ${{ secrets.registry-password || secrets.GITHUB_TOKEN }}
-        run: |
-          tags=""
-          for tag in ${{ inputs.also-tag }}; do
-            tags="$tags --tag $tag"
-          done
-
-          reference='${{ inputs.registry }}/${{ inputs.repository }}:${{ steps.version.outputs.version }}'
-          digest=$(bunx --bun @cedricmkl/workers-oci@${{ inputs.workers-oci-version }} push .artifact "$reference" $tags)
-
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "reference=$reference@$digest" >> "$GITHUB_OUTPUT"
-
-      - name: summary
-        run: |
-          {
-            echo '## `${{ inputs.repository }}` ${{ steps.version.outputs.version }}'
-            echo
-            echo 'Pin this release with:'
-            echo
-            echo '```'
-            echo '${{ steps.push.outputs.reference }}'
-            echo '```'
-            echo
-            bunx --bun @cedricmkl/workers-oci@${{ inputs.workers-oci-version }} inspect .artifact \
-              | sed 's/^/    /'
-          } >> "$GITHUB_STEP_SUMMARY"
+      - id: push
+        uses: ./.workers-oci/push
+        with:
+          reference: ${{ inputs.registry }}/${{ inputs.repository }}:${{ steps.build.outputs.version }}
+          tags: ${{ inputs.also-tag }}
+          username: ${{ secrets.registry-username }}
+          password: ${{ secrets.registry-password || secrets.GITHUB_TOKEN }}
+          setup-bun: "false"

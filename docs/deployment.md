@@ -13,6 +13,20 @@ Terraform reads `worker-app.json` during `plan`, and the provider uploads worker
 modules from a path, so the artifact is on disk before the plan runs. Put the
 pull in whatever wraps your `plan` and `apply`.
 
+## Pinning a release
+
+An installation names one artifact, and the useful shape is the one a container
+image and a Helm chart already have: registry, repository, tag and digest in a
+single reference.
+
+```
+207567764500.dkr.ecr.eu-central-1.amazonaws.com/example:v1.2.3@sha256:...
+```
+
+The tag says which release was meant and the digest says which bytes were meant.
+Keeping both is what stops a moved tag from silently changing a deployment, and
+`pull` verifies the digest before it unpacks anything.
+
 ## terraform/resources
 
 Creates the d1, kv, r2 and queue bindings you list in `names`, and hands back

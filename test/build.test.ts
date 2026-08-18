@@ -194,7 +194,7 @@ describe("the remote URL is recorded one way", () => {
  * beside the entry module.
  */
 describe("what reaches the layer", () => {
-  const filesOf = (root: string): string[] => built(root).files;
+  const filesOf = (root: string): readonly string[] => built(root).files;
 
   test("a source map does not ship unless asked for", () => {
     const root = tree({

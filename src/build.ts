@@ -282,8 +282,11 @@ export const build = (options: BuildOptions): BuildResult => {
     schemaVersion: 2,
     mediaType: MANIFEST_TYPE,
     artifactType: ARTIFACT_TYPE,
-    config: descriptorFor(CONFIG_TYPE, configBlob),
-    layers: [descriptorFor(LAYER_TYPE, layerBlob)],
+    // Named, so `oras pull` writes them. `worker-app.json` rather than
+    // `config.json`, because that is the name the document has once it is on
+    // disk beside the tree it describes, and it is what `pull --into` writes.
+    config: descriptorFor(CONFIG_TYPE, configBlob, "worker-app.json"),
+    layers: [descriptorFor(LAYER_TYPE, layerBlob, "content.tar")],
     annotations,
   };
 

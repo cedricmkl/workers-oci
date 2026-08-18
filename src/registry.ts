@@ -6,10 +6,19 @@ import { INDEX_TYPE, MANIFEST_TYPE, type Descriptor, type Manifest } from "./typ
 export const digestOf = (data: Uint8Array): string =>
   `sha256:${createHash("sha256").update(data).digest("hex")}`;
 
-export const descriptorFor = (mediaType: string, data: Uint8Array): Descriptor => ({
+/**
+ * A descriptor, with a `title` when the blob has a filename worth writing.
+ *
+ * `oras pull` writes a layer to disk only when the descriptor carries
+ * `org.opencontainers.image.title`, and skips it silently otherwise. Without one
+ * the artifact could be pulled by this tool and by nothing else, which is most of
+ * the reason to be an OCI artifact rather than a tarball on a release page.
+ */
+export const descriptorFor = (mediaType: string, data: Uint8Array, title?: string): Descriptor => ({
   mediaType,
   digest: digestOf(data),
   size: data.length,
+  ...(title === undefined ? {} : { annotations: { "org.opencontainers.image.title": title } }),
 });
 
 /**

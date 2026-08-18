@@ -58,6 +58,27 @@ jobs:
               || { echo "worker $w does not declare the shared chunk"; exit 1; }
           done
 
+      # PLAIN ORAS, because being an OCI artifact is only worth anything if the
+      # standard tool can read it. `oras pull` writes a blob to disk only when
+      # its descriptor carries `org.opencontainers.image.title` and skips it
+      # silently otherwise, so without those annotations this artifact was
+      # readable by its own CLI and by nothing else.
+      - uses: oras-project/setup-oras@v2
+
+      - name: oras can read what this pushed
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/oras && cd /tmp/oras
+          oras pull localhost:5111/ci/example:v0.0.0 --plain-http
+
+          test -f worker-app.json
+          test -f content.tar
+          tar tf content.tar | grep -qx 'dist/api.js'
+
+          # The config blob is the document, byte for byte.
+          oras manifest fetch-config localhost:5111/ci/example:v0.0.0 --plain-http \
+            | diff - worker-app.json
+
       # The build EMITS a document, with `modules` filled in, and that document is
       # what a deployment reads. Only the hand-written source was ever validated,
       # so a build that wrote something schema-invalid passed both jobs.

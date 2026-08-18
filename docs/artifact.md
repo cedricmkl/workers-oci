@@ -75,6 +75,16 @@ failures to different places.
 OCI tag, mirrored into `org.opencontainers.image.version`. Keeping it in the tag
 alone leaves nowhere for a second copy to disagree with it.
 
+Both blobs carry `org.opencontainers.image.title`, so `oras pull` writes them to
+disk as `worker-app.json` and `content.tar`. A descriptor without one is skipped
+silently, which would leave the artifact readable by this tool and by nothing
+else.
+
+```
+oras pull ghcr.io/example/app:v1.2.3
+oras manifest fetch-config ghcr.io/example/app:v1.2.3
+```
+
 ## The content layer
 
 One uncompressed tar with everything the artifact ships:

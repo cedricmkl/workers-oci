@@ -187,13 +187,45 @@ export const build = (options: BuildOptions): BuildResult => {
 
   // ── What ships ────────────────────────────────────────────────────────────
   //
-  // The whole directory holding an entry module, because a bundler splits its
-  // output into chunks the document never names. Assets and migrations come from
-  // the paths the document does name.
+  // TWO PASSES, and they answer different questions. The first walks the
+  // directory holding each entry module, because a bundler splits its output
+  // into chunks the document never names and they have to be found before they
+  // can be named. The second ships what is NAMED, which after discovery is the
+  // entry, its chunks, the assets, the migrations and anything `--include` adds.
+  //
+  // It used to be one pass, shipping every file in the entry's directory. That
+  // put `index.js.map` in the layer, at three times the size of the bundle it
+  // maps, along with whatever else the bundler left there, and none of it was
+  // ever uploaded: the version takes `main` plus `modules`. So the digest moved
+  // when a source map changed, `inspect` listed files that do nothing, and every
+  // pull paid for them. `--include dist/index.js.map` still ships one on purpose.
+
+  const excludedFromLayer = (path: string): boolean =>
+    path === configName || path === outName || (outName !== null && path.startsWith(`${outName}/`));
+
+  const candidates = new Map<string, Entry>();
+  for (const w of app.workers) {
+    for (const entry of collect(root, dirname(w.main))) {
+      if (!excludedFromLayer(entry.path)) candidates.set(entry.path, entry);
+    }
+  }
+
+  for (const w of app.workers) {
+    if (!candidates.has(w.main)) {
+      throw new Error(`worker ${w.name} names ${w.main} as its entry module, which is not in the artifact`);
+    }
+  }
+
+  // `modules` is left OFF when there is nothing to say, so a document that
+  // declared none and has no chunks serialises exactly as it was written.
+  const workers = app.workers.map((w) => {
+    const modules = discover(w, app, [...candidates.keys()], configName === null ? [] : [configName]);
+    return modules.length === 0 ? w : { ...w, modules };
+  });
 
   const targets = new Set<string>();
-  for (const w of app.workers) {
-    targets.add(dirname(w.main));
+  for (const w of workers) {
+    targets.add(w.main);
     for (const m of w.modules ?? []) targets.add(m.path);
   }
   for (const r of app.resources ?? []) {
@@ -202,25 +234,11 @@ export const build = (options: BuildOptions): BuildResult => {
   for (const m of app.migrations ?? []) targets.add(m.directory);
   for (const extra of options.include ?? []) targets.add(extra);
 
-  const excludedFromLayer = (path: string): boolean =>
-    path === configName || path === outName || (outName !== null && path.startsWith(`${outName}/`));
-
   const seen = new Map<string, Entry>();
   for (const target of targets) {
     for (const entry of collect(root, target)) if (!excludedFromLayer(entry.path)) seen.set(entry.path, entry);
   }
   const entries = [...seen.values()];
-
-  for (const w of app.workers) {
-    if (!seen.has(w.main)) throw new Error(`worker ${w.name} names ${w.main} as its entry module, which is not in the artifact`);
-  }
-
-  // `modules` is left OFF when there is nothing to say, so a document that
-  // declared none and has no chunks serialises exactly as it was written.
-  const workers = app.workers.map((w) => {
-    const modules = discover(w, app, [...seen.keys()], configName === null ? [] : [configName]);
-    return modules.length === 0 ? w : { ...w, modules };
-  });
 
   // The document that SHIPS, which is the one a deployment reads.
   const complete: WorkerApp = { ...app, workers };

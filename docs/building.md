@@ -157,16 +157,20 @@ bunx esbuild src/api.ts src/consumer.ts \
   --outdir=dist --splitting
 ```
 
-The whole directory holding an entry module ships, and the build then discovers
-the chunks the bundler wrote beside that entry and records them in the worker's
-`modules`. Code splitting names its own output: esbuild writes
-`chunk-QW7T4A3B.js`, with a name that changes whenever the input does, so listing
-those by hand is wrong on the next build.
+The build reads the directory holding each entry module, records the chunks the
+bundler wrote beside it in that worker's `modules`, and then ships what the
+document names: the entry, its chunks, the assets, the migrations, and anything
+`--include` adds. Code splitting names its own output, so listing those chunks by
+hand is wrong on the next build: esbuild writes `chunk-QW7T4A3B.js`, under a name
+that moves whenever the input does.
+
+Nothing else in that directory ships. A worker version uploads `main` plus
+`modules`, so a file that is neither was carried in every pull and used by
+nothing, and the digest moved when it changed. `dist/index.js.map` is the usual
+one, commonly three times the size of the bundle it maps.
 
 Discovery is an allowlist of the extensions the runtime has a module type for:
-`js`, `mjs`, `cjs`, `wasm`, `json`, `txt`, `bin`. That is what keeps `api.js.map`
-out, since uploading a source map costs script size for a file nothing imports.
-A path is skipped when it is:
+`js`, `mjs`, `cjs`, `wasm`, `json`, `txt`, `bin`. A path is skipped when it is:
 
 - outside the entry module's directory, unless the entry sits at the layer root
 - another worker's entry module, since two workers built into one directory share
@@ -177,7 +181,7 @@ A path is skipped when it is:
 
 The result is sorted, because the config document is part of the digest.
 
-Ship anything else with `--include`:
+Ship anything else on purpose with `--include`, a source map included:
 
 ```
 workers-oci build --config worker-app.json --out .artifact --include LICENSE

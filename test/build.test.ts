@@ -188,3 +188,51 @@ describe("the remote URL is recorded one way", () => {
     expect(sourceOf("file:///srv/git/repo")).toBe("file:///srv/git/repo");
   });
 });
+
+/**
+ * The layer ships what is NAMED, which is not the same as everything sitting
+ * beside the entry module.
+ */
+describe("what reaches the layer", () => {
+  const filesOf = (root: string): string[] => built(root).files;
+
+  test("a source map does not ship unless asked for", () => {
+    const root = tree({
+      "worker-app.json": JSON.stringify(document()),
+      "dist/index.js": "export default {}",
+      "dist/index.js.map": "{}",
+      "dist/README.md": "written by the bundler",
+    });
+    // The version uploads `main` plus `modules`, so a file that is neither was
+    // paid for on every pull and used by nothing. A source map is commonly three
+    // times the size of the bundle it maps.
+    expect(filesOf(root)).toEqual(["dist/index.js"]);
+  });
+
+  test("--include ships one on purpose", () => {
+    const root = tree({
+      "worker-app.json": JSON.stringify(document()),
+      "dist/index.js": "export default {}",
+      "dist/index.js.map": "{}",
+    });
+    const result = build({
+      config: join(root, "worker-app.json"),
+      out: join(root, ".out"),
+      created: "2026-07-14T00:00:00Z",
+      include: ["dist/index.js.map"],
+    });
+    expect(result.files).toEqual(["dist/index.js", "dist/index.js.map"]);
+    // Shipped, and still not a module: nothing imports it.
+    expect(result.app.workers[0]).not.toHaveProperty("modules");
+  });
+
+  test("a discovered chunk ships, because something imports it", () => {
+    const root = tree({
+      "worker-app.json": JSON.stringify(document()),
+      "dist/index.js": "import './chunk-A.js'",
+      "dist/chunk-A.js": "export const x = 1",
+      "dist/index.js.map": "{}",
+    });
+    expect(filesOf(root)).toEqual(["dist/chunk-A.js", "dist/index.js"]);
+  });
+});

@@ -53,7 +53,9 @@ export const describe = ({ manifest, digest, app }: Inspection): string => {
   lines.push(`  created      ${a["org.opencontainers.image.created"] ?? "unknown"}`);
   if (a["org.opencontainers.image.revision"] !== undefined) lines.push(`  revision     ${a["org.opencontainers.image.revision"]}`);
   if (a["org.opencontainers.image.source"] !== undefined) lines.push(`  source       ${a["org.opencontainers.image.source"]}`);
-  lines.push(`  content      ${bytes(manifest.layers[0]?.size ?? 0)} compressed`);
+  // Not "compressed". The layer is an uncompressed tar on purpose, and calling
+  // the number compressed made it read as the smaller of two figures.
+  lines.push(`  content      ${bytes(manifest.layers[0]?.size ?? 0)}`);
   lines.push(`  runtime      compatibility date ${app.runtime.compatibility_date}`);
   if ((app.runtime.compatibility_flags ?? []).length > 0) {
     lines.push(`               flags ${(app.runtime.compatibility_flags ?? []).join(", ")}`);
@@ -64,7 +66,11 @@ export const describe = ({ manifest, digest, app }: Inspection): string => {
   for (const w of app.workers) {
     const notes = [
       w.crons !== undefined && w.crons.length > 0 ? `cron ${w.crons.join(", ")}` : null,
-      w.consumes !== undefined && w.consumes.length > 0 ? `consumes ${w.consumes.join(", ")}` : null,
+      // A consumer is a binding name or an object carrying one, and the screen
+      // wants the name either way.
+      w.consumes !== undefined && w.consumes.length > 0
+        ? `consumes ${w.consumes.map((c) => (typeof c === "string" ? c : c.binding)).join(", ")}`
+        : null,
       w.routable === false ? "not routable" : null,
     ].filter((n): n is string => n !== null);
     lines.push(`    ${w.name.padEnd(16)} ${w.main}${notes.length > 0 ? `  (${notes.join("; ")})` : ""}`);
@@ -77,7 +83,6 @@ export const describe = ({ manifest, digest, app }: Inspection): string => {
       const notes = [
         r.optional === true ? "optional" : null,
         r.rebuildable === true ? "rebuildable" : null,
-        r.dead_letter === true ? "dead letter queue" : null,
         r.directory !== undefined ? `from ${r.directory}` : null,
       ].filter((n): n is string => n !== null);
       lines.push(`    ${r.binding.padEnd(16)} ${r.kind}${notes.length > 0 ? `  (${notes.join("; ")})` : ""}`);
@@ -107,9 +112,11 @@ export const describe = ({ manifest, digest, app }: Inspection): string => {
     }
   }
 
-  if (app.migrations !== undefined) {
+  if ((app.migrations ?? []).length > 0) {
     lines.push("");
-    lines.push(`  migrations     ${app.migrations.directory}, applied to ${app.migrations.binding}`);
+    for (const m of app.migrations ?? []) {
+      lines.push(`  migrations     ${m.directory}, applied to ${m.binding}`);
+    }
   }
   if (app.bootstrap !== undefined) {
     lines.push(`  bootstrap      POST ${app.bootstrap.endpoint} on ${app.bootstrap.worker}`);

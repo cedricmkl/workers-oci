@@ -44,6 +44,19 @@ jobs:
 
           test -f /tmp/pulled/worker-app.json
           test -f /tmp/pulled/dist/api.js
+          test -f /tmp/pulled/migrations/0001_init.sql
+
+          # The chunk both entries import, and the document the build wrote for
+          # it. The tar always carried the chunk; what regressed silently was the
+          # `modules` entry that tells the deployment to UPLOAD it, and without
+          # that the worker dies at its first dynamic import in production.
+          test -f /tmp/pulled/dist/chunk-shared.js
+          for w in api consumer; do
+            jq -e --arg w "$w" \
+              '.workers[] | select(.name == $w) | .modules | map(.path) | index("dist/chunk-shared.js")' \
+              /tmp/pulled/worker-app.json >/dev/null \
+              || { echo "worker $w does not declare the shared chunk"; exit 1; }
+          done
 
       - name: the same commit builds the same digest
         run: |

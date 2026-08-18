@@ -131,7 +131,7 @@ const discover = (
   for (const r of app.resources ?? []) {
     if (r.kind === "assets" && r.directory !== undefined) prefixes.push(`${r.directory.replace(/\/$/, "")}/`);
   }
-  if (app.migrations !== undefined) prefixes.push(`${app.migrations.directory.replace(/\/$/, "")}/`);
+  for (const m of app.migrations ?? []) prefixes.push(`${m.directory.replace(/\/$/, "")}/`);
 
   const found = paths
     .filter(
@@ -175,7 +175,7 @@ export const build = (options: BuildOptions): BuildResult => {
   for (const r of app.resources ?? []) {
     if (r.kind === "assets" && r.directory !== undefined) targets.add(r.directory);
   }
-  if (app.migrations !== undefined) targets.add(app.migrations.directory);
+  for (const m of app.migrations ?? []) targets.add(m.directory);
   for (const extra of options.include ?? []) targets.add(extra);
 
   const excludedFromLayer = (path: string): boolean =>

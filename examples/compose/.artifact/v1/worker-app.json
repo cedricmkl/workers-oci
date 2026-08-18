@@ -5,7 +5,7 @@
   "resources": [
     { "binding": "DB", "kind": "d1" },
     { "binding": "CACHE", "kind": "kv", "rebuildable": true },
-    { "binding": "EVENTS", "kind": "queue", "dead_letter": true },
+    { "binding": "EVENTS", "kind": "queue" },
     { "binding": "ASSETS", "kind": "assets", "directory": "public", "not_found_handling": "single-page-application" }
   ],
   "vars": [
@@ -18,7 +18,7 @@
   ],
   "workers": [
     { "name": "api", "main": "dist/api.js", "crons": ["0 3 * * *"] },
-    { "name": "consumer", "main": "dist/consumer.js", "consumes": ["EVENTS"], "routable": false, "bindings": ["DB", "EVENTS"] }
+    { "name": "consumer", "main": "dist/consumer.js", "consumes": [{ "binding": "EVENTS", "dead_letter": true, "max_batch_size": 10 }], "routable": false, "bindings": ["DB", "EVENTS"] }
   ],
-  "migrations": { "binding": "DB", "directory": "migrations" }
+  "migrations": [{ "binding": "DB", "directory": "migrations" }]
 }

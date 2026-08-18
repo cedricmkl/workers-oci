@@ -21,7 +21,27 @@ export class ConfigError extends Error {
 const NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const BINDING = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
-const KINDS = new Set(["d1", "kv", "r2", "queue", "assets"]);
+/**
+ * Every kind the schema permits, and the list has to stay in step with it.
+ *
+ * It used to hold the first five. The other seven were unreachable: an artifact
+ * declaring one was refused here and never got as far as `terraform/deploy`,
+ * which already knew how to bind three of them.
+ */
+const KINDS = new Set([
+  "d1",
+  "kv",
+  "r2",
+  "queue",
+  "assets",
+  "hyperdrive",
+  "vectorize",
+  "analytics_engine",
+  "ai",
+  "browser",
+  "version_metadata",
+  "ratelimit",
+]);
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -201,28 +221,56 @@ export const validate = (input: unknown): WorkerApp => {
       const problem = badPath(raw["main"]);
       if (problem !== null) bad(`${at}.main ${problem}`);
 
-      for (const key of ["bindings", "consumes"] as const) {
-        const list = raw[key];
-        if (list === undefined) continue;
-        if (!Array.isArray(list)) {
-          bad(`${at}.${key} must be a list`);
-          continue;
-        }
-        for (const b of list) {
-          if (typeof b !== "string" || !bindings.has(b)) {
-            bad(`${at}.${key} names ${JSON.stringify(b)}, which is not a declared resource binding`);
+      const bindingList = raw["bindings"];
+      if (bindingList !== undefined) {
+        if (!Array.isArray(bindingList)) bad(`${at}.bindings must be a list`);
+        else
+          for (const b of bindingList) {
+            if (typeof b !== "string" || !bindings.has(b)) {
+              bad(`${at}.bindings names ${JSON.stringify(b)}, which is not a declared resource binding`);
+            }
           }
-        }
       }
 
+      /*
+       * A consumer is a binding name OR an object carrying that name and the
+       * subscription's settings. The object form is what the schema has always
+       * defined and what `terraform/deploy` normalises; this refused it, so a
+       * document that set `max_batch_size` could not be built.
+       */
       const consumes = raw["consumes"];
-      if (Array.isArray(consumes) && Array.isArray(resources)) {
-        for (const b of consumes) {
-          const found = resources.find((r) => isObject(r) && r["binding"] === b);
-          if (isObject(found) && found["kind"] !== "queue") {
-            bad(`${at}.consumes names ${String(b)}, which is a ${String(found["kind"])} rather than a queue`);
+      if (consumes !== undefined) {
+        if (!Array.isArray(consumes)) bad(`${at}.consumes must be a list`);
+        else
+          for (const [j, entry] of consumes.entries()) {
+            const where = `${at}.consumes[${j}]`;
+            const binding = typeof entry === "string" ? entry : isObject(entry) ? entry["binding"] : undefined;
+            if (typeof binding !== "string") {
+              bad(`${where} must be a binding name or an object carrying one`);
+              continue;
+            }
+            if (!bindings.has(binding)) {
+              bad(`${where} names ${JSON.stringify(binding)}, which is not a declared resource binding`);
+              continue;
+            }
+            const found = Array.isArray(resources)
+              ? resources.find((r) => isObject(r) && r["binding"] === binding)
+              : undefined;
+            if (isObject(found) && found["kind"] !== "queue") {
+              bad(`${where} names ${binding}, which is a ${String(found["kind"])} rather than a queue`);
+            }
+            if (isObject(entry)) {
+              for (const key of ["max_batch_size", "max_batch_timeout", "max_retries", "max_concurrency", "retry_delay"]) {
+                const value = entry[key];
+                if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value < 0)) {
+                  bad(`${where}.${key} must be a whole number of at least zero: ${JSON.stringify(value)}`);
+                }
+              }
+              if (entry["dead_letter"] !== undefined && typeof entry["dead_letter"] !== "boolean") {
+                bad(`${where}.dead_letter must be true or false`);
+              }
+            }
           }
-        }
       }
 
       const crons = raw["crons"];
@@ -234,17 +282,35 @@ export const validate = (input: unknown): WorkerApp => {
 
   // ── migrations and bootstrap ──────────────────────────────────────────────
 
+  /*
+   * A LIST, one entry per database. This read a single object, which is the
+   * whole of what an artifact with one database needs and is not what the
+   * schema says: an artifact may carry a schema for more than one D1 binding,
+   * and there is no reason for the document to be able to name only the first.
+   */
   const migrations = input["migrations"];
   if (migrations !== undefined) {
-    if (!isObject(migrations)) {
-      bad("migrations must be an object");
+    if (!Array.isArray(migrations)) {
+      bad("migrations must be a list, one entry per database");
     } else {
-      const binding = migrations["binding"];
-      if (typeof binding !== "string" || !bindings.has(binding)) {
-        bad(`migrations.binding names ${JSON.stringify(binding)}, which is not a declared resource binding`);
+      const seenBinding = new Set<string>();
+      for (const [i, entry] of migrations.entries()) {
+        const at = `migrations[${i}]`;
+        if (!isObject(entry)) {
+          bad(`${at} must be an object`);
+          continue;
+        }
+        const binding = entry["binding"];
+        if (typeof binding !== "string" || !bindings.has(binding)) {
+          bad(`${at}.binding names ${JSON.stringify(binding)}, which is not a declared resource binding`);
+        } else if (seenBinding.has(binding)) {
+          bad(`${at}.binding names ${binding} a second time, and one database has one migrations directory`);
+        } else {
+          seenBinding.add(binding);
+        }
+        const problem = badPath(entry["directory"]);
+        if (problem !== null) bad(`${at}.directory ${problem}`);
       }
-      const problem = badPath(migrations["directory"]);
-      if (problem !== null) bad(`migrations.directory ${problem}`);
     }
   }
 
@@ -278,7 +344,7 @@ export const referencedPaths = (app: WorkerApp): string[] => {
   for (const r of (app.resources ?? []) as Resource[]) {
     if (r.kind === "assets" && r.directory !== undefined) paths.push(r.directory);
   }
-  if (app.migrations !== undefined) paths.push(app.migrations.directory);
+  for (const m of app.migrations ?? []) paths.push(m.directory);
   return paths;
 };
 

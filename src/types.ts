@@ -8,7 +8,7 @@ export type WorkerApp = {
   readonly vars?: readonly VarDecl[];
   readonly secrets?: readonly SecretDecl[];
   readonly workers: readonly WorkerDecl[];
-  readonly migrations?: { readonly binding: string; readonly directory: string };
+  readonly migrations?: readonly Migration[];
   readonly bootstrap?: Bootstrap;
 };
 
@@ -17,18 +17,36 @@ export type Runtime = {
   readonly compatibility_flags?: readonly string[];
 };
 
-export type ResourceKind = "d1" | "kv" | "r2" | "queue" | "assets";
+export type Migration = { readonly binding: string; readonly directory: string };
+
+export type ResourceKind =
+  | "d1"
+  | "kv"
+  | "r2"
+  | "queue"
+  | "assets"
+  | "hyperdrive"
+  | "vectorize"
+  | "analytics_engine"
+  | "ai"
+  | "browser"
+  | "version_metadata"
+  | "ratelimit";
 
 export type Resource = {
   readonly binding: string;
   readonly kind: ResourceKind;
   readonly optional?: boolean;
   readonly rebuildable?: boolean;
-  /** queue */
-  readonly dead_letter?: boolean;
+  /** queue. NOT `dead_letter`: that is per CONSUMER, on `workers[].consumes`. */
+  readonly produces?: boolean;
+  /** ratelimit */
+  readonly limit?: number;
+  readonly period?: number;
   /** assets */
   readonly directory?: string;
   readonly not_found_handling?: "none" | "404-page" | "single-page-application";
+  readonly html_handling?: "auto-trailing-slash" | "force-trailing-slash" | "drop-trailing-slash" | "none";
   readonly run_worker_first?: boolean | readonly string[];
 };
 
@@ -52,9 +70,26 @@ export type WorkerDecl = {
   readonly main: string;
   readonly modules?: readonly { readonly path: string; readonly content_type?: string }[];
   readonly bindings?: readonly string[];
-  readonly consumes?: readonly string[];
+  readonly consumes?: readonly (string | Consumer)[];
   readonly crons?: readonly string[];
   readonly routable?: boolean;
+};
+
+/**
+ * A queue subscription. The bare string form is the same thing with every
+ * setting left to the platform.
+ *
+ * `dead_letter` is per CONSUMER and not per queue, because two scripts reading
+ * one queue can legitimately send their failures to different places.
+ */
+export type Consumer = {
+  readonly binding: string;
+  readonly dead_letter?: boolean;
+  readonly max_batch_size?: number;
+  readonly max_batch_timeout?: number;
+  readonly max_retries?: number;
+  readonly max_concurrency?: number;
+  readonly retry_delay?: number;
 };
 
 export type Bootstrap = {

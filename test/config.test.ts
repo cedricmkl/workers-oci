@@ -113,7 +113,7 @@ describe("validate", () => {
   });
 
   test("rejects migrations pointing at a binding that does not exist", () => {
-    expect(problems({ ...base, migrations: { binding: "DB", directory: "migrations" } })).toContainEqual(
+    expect(problems({ ...base, migrations: [{ binding: "DB", directory: "migrations" }] })).toContainEqual(
       expect.stringContaining("not a declared resource binding"),
     );
   });
@@ -122,3 +122,104 @@ describe("validate", () => {
     expect(problems({ schema_version: 9, name: "Not Valid", runtime: {}, workers: [] }).length).toBeGreaterThan(3);
   });
 });
+
+/**
+ * THE VALIDATOR AND THE SCHEMA ARE ONE SET OF RULES, and for a while they were
+ * not. `schema/worker-app.v1.json` is normative; this file existed to say the
+ * same things with messages worth reading, and had quietly become a narrower
+ * document format: seven of the twelve resource kinds were refused, the object
+ * form of `consumes` was refused, and `migrations` was read as a single object.
+ * An artifact using any of them passed CI's schema job and could not be built.
+ */
+describe("agreement with the normative schema", () => {
+  const queue = { ...base, resources: [{ binding: "EVENTS", kind: "queue" }] };
+
+  test.each([
+    "hyperdrive",
+    "vectorize",
+    "analytics_engine",
+    "ai",
+    "browser",
+    "version_metadata",
+    "ratelimit",
+  ])("accepts the %s kind", (kind) => {
+    expect(problems({ ...base, resources: [{ binding: "THING", kind }] })).toEqual([]);
+  });
+
+  test("accepts a consumer as a bare binding name", () => {
+    expect(
+      problems({ ...queue, workers: [{ name: "example", main: "dist/index.js", consumes: ["EVENTS"] }] }),
+    ).toEqual([]);
+  });
+
+  test("accepts a consumer as an object carrying its settings", () => {
+    expect(
+      problems({
+        ...queue,
+        workers: [
+          {
+            name: "example",
+            main: "dist/index.js",
+            consumes: [{ binding: "EVENTS", dead_letter: true, max_batch_size: 10, max_retries: 3 }],
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  test("rejects a consumer object naming a binding that is not a queue", () => {
+    expect(
+      problems({
+        ...base,
+        resources: [{ binding: "DB", kind: "d1" }],
+        workers: [{ name: "example", main: "dist/index.js", consumes: [{ binding: "DB" }] }],
+      }),
+    ).toContainEqual(expect.stringContaining("which is a d1 rather than a queue"));
+  });
+
+  test("rejects a consumer setting that is not a whole number", () => {
+    expect(
+      problems({
+        ...queue,
+        workers: [
+          { name: "example", main: "dist/index.js", consumes: [{ binding: "EVENTS", max_batch_size: "ten" }] },
+        ],
+      }),
+    ).toContainEqual(expect.stringContaining("max_batch_size"));
+  });
+
+  test("accepts migrations for more than one database", () => {
+    expect(
+      problems({
+        ...base,
+        resources: [
+          { binding: "MAIN", kind: "d1" },
+          { binding: "AUDIT", kind: "d1" },
+        ],
+        migrations: [
+          { binding: "MAIN", directory: "migrations/main" },
+          { binding: "AUDIT", directory: "migrations/audit" },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  test("rejects two migration directories for one database", () => {
+    expect(
+      problems({
+        ...base,
+        resources: [{ binding: "MAIN", kind: "d1" }],
+        migrations: [
+          { binding: "MAIN", directory: "migrations/a" },
+          { binding: "MAIN", directory: "migrations/b" },
+        ],
+      }),
+    ).toContainEqual(expect.stringContaining("a second time"));
+  });
+
+  test("rejects migrations that are not a list", () => {
+    expect(
+      problems({ ...base, resources: [{ binding: "DB", kind: "d1" }], migrations: { binding: "DB", directory: "m" } }),
+    ).toContainEqual(expect.stringContaining("must be a list"));
+  });
+})

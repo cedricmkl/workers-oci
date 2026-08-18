@@ -127,7 +127,7 @@ describe("module discovery", () => {
             { binding: "ASSETS", kind: "assets", directory: "public" },
             { binding: "DB", kind: "d1" },
           ],
-          migrations: { binding: "DB", directory: "migrations" },
+          migrations: [{ binding: "DB", directory: "migrations" }],
         }),
       ),
       "index.js": "export default {}",

@@ -205,9 +205,27 @@ const run = async (argv: readonly string[]): Promise<number> => {
         env,
       });
 
-      if (result === null) process.stderr.write("the artifact declares no bootstrap endpoint\n");
-      else process.stderr.write(`bootstrap ${result.endpoint} answered ${result.status}\n`);
-      return 0;
+      if (result === null) {
+        process.stderr.write("the artifact declares no bootstrap steps\n");
+        return 0;
+      }
+
+      for (const step of result.called) {
+        process.stderr.write(`bootstrap ${step.name}: ${step.endpoint} answered ${step.status}\n`);
+      }
+
+      // Named loudly rather than passed over. A `run` step is work the artifact
+      // says has to happen, and this tool declining to execute a program out of
+      // a registry does not make the step unnecessary.
+      for (const step of result.skipped) {
+        process.stderr.write(
+          `bootstrap ${step.name}: NOT RUN. It names ${step.run}, a program this artifact ships, ` +
+            "and running one means executing code pulled from a registry on this machine. " +
+            "Your deployment has to do it deliberately or refuse the artifact.\n",
+        );
+      }
+
+      return result.skipped.length > 0 ? 2 : 0;
     }
 
     default:

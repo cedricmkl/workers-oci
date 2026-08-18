@@ -101,13 +101,13 @@ describe("validate", () => {
   });
 
   test("rejects a bootstrap naming a worker that does not exist", () => {
-    expect(problems({ ...base, bootstrap: { worker: "other", endpoint: "/x" } })).toContainEqual(
+    expect(problems({ ...base, bootstrap: [{ name: "seed", worker: "other", endpoint: "/x" }] })).toContainEqual(
       expect.stringContaining("not one of this artifact's workers"),
     );
   });
 
   test("rejects a bootstrap endpoint that is not a path", () => {
-    expect(problems({ ...base, bootstrap: { worker: "example", endpoint: "https://x/y" } })).toContainEqual(
+    expect(problems({ ...base, bootstrap: [{ name: "seed", worker: "example", endpoint: "https://x/y" }] })).toContainEqual(
       expect.stringContaining("beginning with a slash"),
     );
   });

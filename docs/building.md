@@ -214,6 +214,44 @@ documents it are the same commit and no package registry is involved.
 `.github/workflows/release.yml` wraps both as a whole job for the case they cover
 completely: one bundle command, a registry that takes a username and a password.
 
+## Bootstrap
+
+Installation work the artifact declares, in the order it has to happen. Most
+artifacts need none.
+
+```json
+"bootstrap": [
+  { "name": "seed", "phase": "pre", "run": "bootstrap/seed.mjs",
+    "env": ["ADMIN_EMAIL"], "secrets": ["KEK"] },
+  { "name": "verify", "phase": "post", "worker": "api", "endpoint": "/admin/verify" }
+]
+```
+
+A step is an `endpoint` or a `run`, never both, and the difference is a trust
+boundary rather than a convenience.
+
+`endpoint` asks the deployment to POST to a path on one of this artifact's own
+workers. The work happens on Cloudflare with bindings the Worker already holds,
+and nothing from the artifact executes on the machine holding the credentials.
+Prefer it. The handler must authenticate: the caller sends a bearer token, and an
+endpoint answering without one is an open installation channel on a public
+hostname.
+
+`run` names a program the artifact ships. Honouring one means the deployer
+executing code it pulled from a registry, on the machine holding its credentials.
+A deployer unwilling to do that refuses the artifact rather than skipping the
+step, because the step is work the artifact says must happen. It exists because
+some installation work has no Worker to talk to yet: seeding the database a
+Worker is about to be deployed against happens before there is a Worker.
+
+`workers-oci bootstrap` calls the endpoint steps and REPORTS the run steps
+without executing them, exiting 2 when there were any. Running a program out of a
+registry is a decision a deployment makes in its own configuration, not one a
+general-purpose CLI should make on anybody's behalf.
+
+`phase` is `pre` or `post`, relative to the new version going live. Every step is
+called on every version bump, so each has to be idempotent.
+
 ## Building
 
 ```

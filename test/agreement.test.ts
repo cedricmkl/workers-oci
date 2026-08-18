@@ -98,7 +98,7 @@ describe("constraints the schema states and the validator now enforces", () => {
 
   refused(
     "a bootstrap endpoint holding whitespace",
-    { ...base, bootstrap: { worker: "example", endpoint: "/a b" } },
+    { ...base, bootstrap: [{ name: "seed", worker: "example", endpoint: "/a b" }] },
     "no whitespace",
   );
 
@@ -210,7 +210,7 @@ describe("cross-references the schema cannot state", () => {
     "second assets binding",
   );
 
-  refused("a bootstrap naming a worker this artifact does not ship", { ...base, bootstrap: { worker: "other", endpoint: "/x" } }, "not one of this artifact's workers");
+  refused("a bootstrap naming a worker this artifact does not ship", { ...base, bootstrap: [{ name: "seed", worker: "other", endpoint: "/x" }] }, "not one of this artifact's workers");
 });
 
 /**
@@ -250,4 +250,78 @@ describe("inspect reads both directory shapes", () => {
     expect(result.manifest).not.toBeNull();
     expect(describeArtifact(result)).toContain("content");
   });
+});
+
+/**
+ * `bootstrap` is an ordered LIST of steps, and a step is either an endpoint on
+ * one of this artifact's own workers or a program the artifact ships.
+ *
+ * The distinction is a trust boundary and not a convenience: an `endpoint` step
+ * does its work on Cloudflare with bindings the Worker already holds, and a `run`
+ * step is the deployer executing code it pulled from a registry, on the machine
+ * holding its credentials. Refusing a step that is both is what keeps that
+ * boundary from being decided by the order of a merge.
+ */
+describe("bootstrap steps", () => {
+  const withSecret = {
+    ...base,
+    secrets: [{ name: "KEK" }],
+  };
+
+  test("an endpoint step", () => {
+    expect(
+      problems({ ...base, bootstrap: [{ name: "verify", worker: "example", endpoint: "/admin/verify" }] }),
+    ).toEqual([]);
+  });
+
+  test("a run step, with a phase and a secret it declares", () => {
+    expect(
+      problems({
+        ...withSecret,
+        bootstrap: [{ name: "seed", phase: "pre", run: "bootstrap/seed.mjs", env: ["ADMIN_EMAIL"], secrets: ["KEK"] }],
+      }),
+    ).toEqual([]);
+  });
+
+  refused(
+    "a step that is both",
+    { ...base, bootstrap: [{ name: "s", worker: "example", endpoint: "/x", run: "b/s.mjs" }] },
+    "exactly one of endpoint or run, and carries both",
+  );
+
+  refused("a step that is neither", { ...base, bootstrap: [{ name: "s", phase: "pre" }] }, "carries neither");
+
+  refused(
+    "a run step naming a worker",
+    { ...base, bootstrap: [{ name: "s", run: "b/s.mjs", worker: "example" }] },
+    "only an endpoint step has",
+  );
+
+  refused(
+    "a run path that climbs out of the content root",
+    { ...base, bootstrap: [{ name: "s", run: "../../etc/passwd" }] },
+    "must not contain a `..` segment",
+  );
+
+  refused(
+    "a secret the artifact does not declare",
+    { ...base, bootstrap: [{ name: "s", run: "b/s.mjs", secrets: ["NOPE"] }] },
+    "does not declare as a secret",
+  );
+
+  refused(
+    "two steps with one name",
+    {
+      ...base,
+      bootstrap: [
+        { name: "s", run: "b/a.mjs" },
+        { name: "s", run: "b/b.mjs" },
+      ],
+    },
+    "used twice",
+  );
+
+  refused("a phase outside the enum", { ...base, bootstrap: [{ name: "s", run: "b/s.mjs", phase: "during" }] }, "must be one of pre, post");
+
+  refused("bootstrap given as an object", { ...base, bootstrap: { name: "s", run: "b/s.mjs" } }, "must be a list of steps");
 });

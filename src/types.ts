@@ -9,7 +9,7 @@ export type WorkerApp = {
   readonly secrets?: readonly SecretDecl[];
   readonly workers: readonly WorkerDecl[];
   readonly migrations?: readonly Migration[];
-  readonly bootstrap?: Bootstrap;
+  readonly bootstrap?: readonly BootstrapStep[];
 };
 
 export type Runtime = {
@@ -92,10 +92,30 @@ export type Consumer = {
   readonly retry_delay?: number;
 };
 
-export type Bootstrap = {
-  readonly worker: string;
-  readonly endpoint: string;
+/**
+ * One piece of installation work the artifact declares.
+ *
+ * A DECLARATION, not a promise that anything runs it. `endpoint` asks the
+ * deployment to POST to a path on one of this artifact's own workers, so the work
+ * happens on Cloudflare with bindings the Worker already holds and nothing from
+ * the artifact executes on the machine holding the credentials. `run` names a
+ * program the artifact SHIPS, which means the deployer executing code it pulled
+ * from a registry; a deployer unwilling to do that must refuse the artifact
+ * rather than skip the step. It exists because seeding the database a Worker is
+ * about to be deployed against has no Worker to talk to yet.
+ *
+ * Exactly one of the two, and every step has to be idempotent: a deployment runs
+ * them on every version bump.
+ */
+export type BootstrapStep = {
+  readonly name: string;
+  readonly phase?: "pre" | "post";
+  /** `endpoint` only: which of this artifact's workers serves it. */
+  readonly worker?: string;
+  readonly endpoint?: string;
+  readonly run?: string;
   readonly env?: readonly string[];
+  readonly secrets?: readonly string[];
 };
 
 // ── OCI ─────────────────────────────────────────────────────────────────────

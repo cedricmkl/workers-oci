@@ -369,6 +369,15 @@ export const validate = (input: unknown): WorkerApp => {
   checkNamed(input["vars"], "vars");
   checkNamed(input["secrets"], "secrets");
 
+  // For the bootstrap steps below: a step may only ask for a secret the artifact
+  // declares, or the deployment has nowhere to look the name up.
+  const secretNames = new Set<string>(
+    (Array.isArray(input["secrets"]) ? input["secrets"] : [])
+      .filter(isObject)
+      .map((s) => s["name"])
+      .filter((n): n is string => typeof n === "string"),
+  );
+
   const secrets = input["secrets"];
   if (Array.isArray(secrets)) {
     for (const [i, raw] of secrets.entries()) {
@@ -565,23 +574,87 @@ export const validate = (input: unknown): WorkerApp => {
     }
   }
 
+  /*
+   * AN ORDERED LIST. It was a single object meaning "POST this path after the
+   * deploy", which covers an artifact that seeds itself through its own Worker
+   * and nothing else. Real installation work is ordered and sits on both sides of
+   * the deploy: seeding the database a Worker is about to be deployed against
+   * happens BEFORE there is a Worker to ask.
+   */
   const bootstrap = input["bootstrap"];
   if (bootstrap !== undefined) {
-    if (!isObject(bootstrap)) {
-      bad("bootstrap must be an object");
+    if (!Array.isArray(bootstrap)) {
+      bad("bootstrap must be a list of steps, in the order they must happen");
     } else {
-      const worker = bootstrap["worker"];
-      if (typeof worker !== "string" || !workerNames.has(worker)) {
-        bad(`bootstrap.worker names ${JSON.stringify(worker)}, which is not one of this artifact's workers`);
+      const stepNames = new Set<string>();
+      for (const [i, raw] of bootstrap.entries()) {
+        const at = `bootstrap[${i}]`;
+        if (!isObject(raw)) {
+          bad(`${at} must be an object`);
+          continue;
+        }
+
+        const n = raw["name"];
+        if (typeof n !== "string" || !BINDING.test(n)) {
+          bad(`${at}.name must be a JavaScript identifier: ${JSON.stringify(n)}`);
+        } else if (stepNames.has(n)) {
+          bad(`${at}.name is used twice: ${n}`);
+        } else {
+          stepNames.add(n);
+        }
+
+        for (const message of oneOf(raw["phase"], `${at}.phase`, ["pre", "post"])) bad(message);
+
+        // Exactly one, because the two are different things done in different
+        // places by different trust: one asks a Worker to do the work, the other
+        // asks the deployer to run a program out of the artifact.
+        const hasEndpoint = raw["endpoint"] !== undefined;
+        const hasRun = raw["run"] !== undefined;
+        if (hasEndpoint === hasRun) {
+          bad(`${at} must carry exactly one of endpoint or run, and carries ${hasRun ? "both" : "neither"}`);
+        }
+
+        if (hasEndpoint) {
+          const endpoint = raw["endpoint"];
+          if (typeof endpoint !== "string" || !ENDPOINT.test(endpoint)) {
+            bad(`${at}.endpoint must be a path beginning with a slash and holding no whitespace: ${JSON.stringify(endpoint)}`);
+          }
+          const worker = raw["worker"];
+          if (typeof worker !== "string" || !workerNames.has(worker)) {
+            bad(`${at}.worker names ${JSON.stringify(worker)}, which is not one of this artifact's workers`);
+          }
+        }
+
+        if (hasRun) {
+          const problem = badPath(raw["run"]);
+          if (problem !== null) bad(`${at}.run ${problem}`);
+          if (raw["worker"] !== undefined) {
+            bad(`${at} names a worker, which only an endpoint step has: a run step is executed by the deployer.`);
+          }
+        }
+
+        if (raw["env"] !== undefined) {
+          for (const message of stringList(raw["env"], `${at}.env`, 1)) bad(message);
+        }
+        if (raw["secrets"] !== undefined) {
+          for (const message of stringList(raw["secrets"], `${at}.secrets`, 1)) bad(message);
+          if (Array.isArray(raw["secrets"])) {
+            for (const name of raw["secrets"]) {
+              if (typeof name === "string" && !secretNames.has(name)) {
+                bad(`${at}.secrets names ${JSON.stringify(name)}, which the artifact does not declare as a secret`);
+              }
+            }
+          }
+        }
+
+        for (const message of unknownKeys(
+          raw,
+          ["name", "phase", "worker", "endpoint", "run", "env", "secrets"],
+          at,
+        )) {
+          bad(message);
+        }
       }
-      const endpoint = bootstrap["endpoint"];
-      if (typeof endpoint !== "string" || !ENDPOINT.test(endpoint)) {
-        bad(`bootstrap.endpoint must be a path beginning with a slash and holding no whitespace: ${JSON.stringify(endpoint)}`);
-      }
-      if (bootstrap["env"] !== undefined) {
-        for (const message of stringList(bootstrap["env"], "bootstrap.env", 1)) bad(message);
-      }
-      for (const message of unknownKeys(bootstrap, ["worker", "endpoint", "env"], "bootstrap")) bad(message);
     }
   }
 

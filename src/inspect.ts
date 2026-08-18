@@ -139,10 +139,23 @@ export const describe = ({ manifest, digest, app }: Inspection): string => {
       lines.push(`  migrations     ${m.directory}, applied to ${m.binding}`);
     }
   }
-  if (app.bootstrap !== undefined) {
-    lines.push(`  bootstrap      POST ${app.bootstrap.endpoint} on ${app.bootstrap.worker}`);
-    if ((app.bootstrap.env ?? []).length > 0) {
-      lines.push(`                 needs ${(app.bootstrap.env ?? []).join(", ")}`);
+  if ((app.bootstrap ?? []).length > 0) {
+    lines.push("");
+    lines.push("  bootstrap the deployment runs, in order");
+    for (const step of app.bootstrap ?? []) {
+      // The kind is spelled out rather than implied, because one of them means
+      // the deployer executes a program out of this artifact and a reader should
+      // see that without opening the document.
+      const what =
+        step.run !== undefined
+          ? `runs ${step.run} on the deploying machine`
+          : `POST ${step.endpoint} on ${step.worker}`;
+      const needs = [
+        (step.env ?? []).length > 0 ? `env ${(step.env ?? []).join(", ")}` : null,
+        (step.secrets ?? []).length > 0 ? `secrets ${(step.secrets ?? []).join(", ")}` : null,
+      ].filter((n): n is string => n !== null);
+      lines.push(`    ${step.name.padEnd(16)} ${(step.phase ?? "post").padEnd(5)} ${what}`);
+      if (needs.length > 0) lines.push(`                     ${needs.join("; ")}`);
     }
   }
 

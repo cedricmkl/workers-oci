@@ -30,3 +30,16 @@ output "generated_secrets" {
   value       = local.generated_value
   sensitive   = true
 }
+
+# What each worker actually binds, names and types only.
+#
+# A plan cannot show this: the provider marks a binding's `text` attribute
+# sensitive and `plain_text` is what an ordinary variable uses, so one variable
+# redacts the whole `bindings` list. This is the readable half, and it carries no
+# value of any kind.
+output "binding_summary" {
+  description = "Worker name -> binding name -> type. No values."
+  value = {
+    for w, m in local.binding_map : w => { for k, b in m : k => b.type }
+  }
+}

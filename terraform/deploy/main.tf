@@ -164,6 +164,19 @@ locals {
     )
   }
 
+  # ALWAYS PRINTED AS `(sensitive value)` IN A PLAN, and that is the provider's
+  # doing rather than anything here. `cloudflare_worker_version` marks the `text`
+  # attribute of a binding sensitive, and `text` is what a `plain_text` binding
+  # carries, so one ordinary variable redacts the whole list. Supplying no
+  # secrets does not help and neither does `nonsensitive`, because the mark is on
+  # elements inside the collection.
+  #
+  # To read what a deployment will actually bind:
+  #
+  #   tofu show -json <plan> | jq '.planned_values...'
+  #
+  # or the `bindings` output below, which lists the names and types with no
+  # values in them.
   bindings = {
     for w, m in local.binding_map : w => [for k in sort(keys(m)) : m[k]]
   }

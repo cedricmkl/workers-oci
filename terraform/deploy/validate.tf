@@ -101,12 +101,24 @@ locals {
       if !try(fileexists(m.content_file), false)
     ]
   ])
+
+  # A secret cannot be both carried and inherited: the two disagree about who
+  # owns the value, and which one wins is an ordering detail of a merge.
+  secret_conflicts = sort(setintersection(
+    var.inherit_secrets,
+    toset(concat(local.supplied, keys(var.secrets_store)))
+  ))
 }
 
 resource "terraform_data" "validate" {
   input = local.app
 
   lifecycle {
+    precondition {
+      condition     = length(local.secret_conflicts) == 0
+      error_message = "these secrets are both carried and inherited: ${join(", ", local.secret_conflicts)}. `inherit_secrets` says the value belongs to whatever already set it; `secrets` and `secrets_store` say it belongs to this configuration. Pick one per secret."
+    }
+
     precondition {
       condition     = try(local.artifact.schema_version, 0) == 1
       error_message = "Artifact declares schema_version ${try(local.artifact.schema_version, "none")}. This module reads version 1."

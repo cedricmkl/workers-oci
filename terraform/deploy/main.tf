@@ -140,6 +140,11 @@ locals {
       },
       { for k, v in var.secrets : k => { type = "secret_text", name = k, text = v } },
       { for k, v in local.generated_value : k => { type = "secret_text", name = k, text = v } },
+
+      # DECLARED, NOT CARRIED. The binding names the secret and says nothing
+      # about its value, so the version can be replaced by something that has
+      # never seen it and whatever set it keeps owning it.
+      { for k in var.inherit_secrets : k => { type = "inherit", name = k } },
       { for k, s in var.secrets_store : k => {
         type        = "secrets_store_secret"
         name        = k

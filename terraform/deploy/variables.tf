@@ -76,8 +76,9 @@ variable "secrets" {
     Secret values, by name.
 
     Values reach state: the Cloudflare API never returns a secret, so the
-    provider keeps the value to know whether it changed. Use `secrets_store` to
-    keep a value out of state, or encrypt state.
+    provider keeps the value to know whether it changed. `inherit_secrets` keeps
+    a value out of state entirely, `secrets_store` moves it to a store, and
+    encrypting state covers the case where this variable is the right one.
   EOT
   type        = map(string)
   default     = {}
@@ -102,6 +103,34 @@ variable "secrets_store" {
     secret_name = optional(string)
   }))
   default = {}
+}
+
+variable "inherit_secrets" {
+  description = <<-EOT
+    Secrets this deployment DECLARES but does not carry, by name.
+
+    The binding says the secret exists and says nothing about its value, so a
+    version can be replaced without the value being known to anything that plans
+    it. Whatever set the secret keeps owning it: `wrangler secret put`, the
+    dashboard, a person years ago.
+
+    THIS IS THE ONLY PATH THAT KEEPS A VALUE OUT OF STATE AND OUT OF A SECRET
+    STORE. `secrets` puts it in state, because the API never returns a secret and
+    the provider has to keep it to know whether it changed. `secrets_store` keeps
+    it out of state and puts it in a store, which is a second place to provision.
+
+    It is still a declaration: the version lists which secrets exist, so one that
+    nothing sets any more shows up as a version that fails rather than as a
+    binding that quietly disappeared.
+
+    Verified against a live account: a secret written by `wrangler secret put`
+    survives a Terraform-created version that names it here and nothing else.
+
+    A name in both this and `secrets` is refused, because the two disagree about
+    who owns the value.
+  EOT
+  type        = set(string)
+  default     = []
 }
 
 variable "generate_secrets" {

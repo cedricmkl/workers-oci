@@ -99,6 +99,7 @@ module "deploy" {
 | `vars` | plain values by name |
 | `secrets` | secret values by name, sensitive |
 | `secrets_store` | Secrets Store references by name |
+| `inherit_secrets` | secrets this deployment declares but does not carry: the binding names one and says nothing about its value |
 | `generate_secrets` | create values for `generate` secrets, default true |
 | `zone_id`, `domains`, `routes`, `workers_dev` | routing |
 | `previews_enabled` | per-version preview URLs, with `workers_dev` on. Default false. |
@@ -232,3 +233,29 @@ decision.
 [examples/compose](../examples/compose) composes both modules and binds one
 resource the modules do not own. CI plans it with `CLOUDFLARE_API_TOKEN` set to a
 dummy value, checking that every binding, variable and secret resolves.
+
+### Three places a secret can come from, and a fourth that carries nothing
+
+`secrets` is a value this configuration holds. It reaches state, because the
+Cloudflare API never returns a secret and the provider keeps it to know whether
+it changed. Encrypt state if this is the right one.
+
+`secrets_store` is a reference to a Cloudflare Secrets Store entry. No value in
+state, and a second place to provision.
+
+The artifact's own `generate` block covers keys whose only property is being
+unguessable and stable. Those are created here and are in state.
+
+`inherit_secrets` carries nothing at all. The binding names the secret and says
+it exists, and whatever set it keeps owning it: `wrangler secret put`, the
+dashboard, a person years ago. It is still a declaration, so a secret nothing
+sets any more surfaces as a version that fails rather than as a binding that
+quietly disappeared.
+
+```hcl
+inherit_secrets = ["COOKIE_SECRET", "DASHBOARD_PRIVATE_KEY"]
+```
+
+A name in both `inherit_secrets` and one of the other two is refused at plan
+time: they disagree about who owns the value.
+

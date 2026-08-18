@@ -138,8 +138,10 @@ locals {
           : { type = "plain_text", name = k, text = v }
         )
       },
-      { for k, v in var.secrets : k => { type = "secret_text", name = k, text = v } },
-      { for k, v in local.generated_value : k => { type = "secret_text", name = k, text = v } },
+      # NOT the secret values. They join below, and only when there are any: a
+      # for-expression over `var.secrets` marks its result even when the map is
+      # empty, and the mark lands on every element, so the whole binding list
+      # prints as `(sensitive value)` for a deployment that supplies nothing.
 
       # DECLARED, NOT CARRIED. The binding names the secret and says nothing
       # about its value, so the version can be replaced by something that has
@@ -164,8 +166,31 @@ locals {
     )
   }
 
+  # Whether any binding actually carries a secret VALUE. `var.secrets` is
+  # sensitive and a mark spreads to everything derived from it, so a deployment
+  # that supplies none still had its whole binding list printed as
+  # `(sensitive value)` and every plan was unreviewable.
+  #
+  # `inherit_secrets` and `secrets_store` carry no value, which is the point of
+  # them, so a deployment using only those gets a plan it can read. One that does
+  # supply a value keeps the mark, because then it is a real secret in the diff.
+  # `local.supplied` and not `var.secrets`: `length()` of a sensitive value is a
+  # sensitive boolean, which marks the conditional that reads it and puts the
+  # mark straight back on the list this is trying to keep clean.
+  carries_secret = length(local.supplied) > 0 || length(local.generated) > 0
+
+  # The values, kept in their own map so the one above stays clean.
+  secret_bindings = merge(
+    { for k, v in var.secrets : k => { type = "secret_text", name = k, text = v } },
+    { for k, v in local.generated_value : k => { type = "secret_text", name = k, text = v } },
+  )
+
+  binding_final = {
+    for w, m in local.binding_map : w => local.carries_secret ? merge(m, local.secret_bindings) : m
+  }
+
   bindings = {
-    for w, m in local.binding_map : w => [for k in sort(keys(m)) : m[k]]
+    for w, m in local.binding_final : w => [for k in sort(keys(m)) : m[k]]
   }
 
   content_type = {

@@ -282,10 +282,20 @@ export const build = (options: BuildOptions): BuildResult => {
     schemaVersion: 2,
     mediaType: MANIFEST_TYPE,
     artifactType: ARTIFACT_TYPE,
-    // Named, so `oras pull` writes them. `worker-app.json` rather than
-    // `config.json`, because that is the name the document has once it is on
-    // disk beside the tree it describes, and it is what `pull --into` writes.
-    config: descriptorFor(CONFIG_TYPE, configBlob, "worker-app.json"),
+    /*
+     * THE LAYER IS NAMED AND THE CONFIG IS NOT, and that asymmetry is ECR's.
+     *
+     * A title on the layer is what makes `oras pull` write it. The same title on
+     * the CONFIG descriptor made Amazon ECR refuse the whole manifest with
+     * `405 UNSUPPORTED: Invalid parameter at 'ImageManifest' ... Invalid JSON
+     * syntax`, which names neither the field nor the reason. oras does not put
+     * annotations on a config descriptor either, and matching the reference
+     * implementation is the safer place to sit.
+     *
+     * The config is still reachable, by the command that exists for it:
+     * `oras manifest fetch-config`.
+     */
+    config: descriptorFor(CONFIG_TYPE, configBlob),
     layers: [descriptorFor(LAYER_TYPE, layerBlob, "content.tar")],
     annotations,
   };

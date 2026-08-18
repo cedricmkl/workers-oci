@@ -75,14 +75,18 @@ failures to different places.
 OCI tag, mirrored into `org.opencontainers.image.version`. Keeping it in the tag
 alone leaves nowhere for a second copy to disagree with it.
 
-Both blobs carry `org.opencontainers.image.title`, so `oras pull` writes them to
-disk as `worker-app.json` and `content.tar`. A descriptor without one is skipped
-silently, which would leave the artifact readable by this tool and by nothing
-else.
+The layer carries `org.opencontainers.image.title`, so `oras pull` writes it to
+disk as `content.tar`. A descriptor without one is skipped silently, which would
+leave the artifact readable by this tool and by nothing else.
+
+The config descriptor deliberately carries none. Amazon ECR refuses a whole
+manifest whose config descriptor has annotations, with `405 UNSUPPORTED: Invalid
+parameter at 'ImageManifest' ... Invalid JSON syntax`, and oras does not put them
+there either. The config has its own command:
 
 ```
-oras pull ghcr.io/example/app:v1.2.3
-oras manifest fetch-config ghcr.io/example/app:v1.2.3
+oras pull ghcr.io/example/app:v1.2.3                 # content.tar
+oras manifest fetch-config ghcr.io/example/app:v1.2.3 # the document
 ```
 
 ## The content layer

@@ -71,13 +71,23 @@ jobs:
           mkdir -p /tmp/oras && cd /tmp/oras
           oras pull localhost:5111/ci/example:v0.0.0 --plain-http
 
-          test -f worker-app.json
           test -f content.tar
           tar tf content.tar | grep -qx 'dist/api.js'
 
-          # The config blob is the document, byte for byte.
-          oras manifest fetch-config localhost:5111/ci/example:v0.0.0 --plain-http \
-            | diff - worker-app.json
+          # The config comes from the command that exists for it, because its
+          # descriptor deliberately carries no title (see below).
+          oras manifest fetch-config localhost:5111/ci/example:v0.0.0 --plain-http > fetched.json
+          diff fetched.json /tmp/artifact/config.json
+
+          # THE CONFIG DESCRIPTOR MUST CARRY NO ANNOTATIONS. Amazon ECR refuses a
+          # manifest whose config descriptor has any, with `405 UNSUPPORTED:
+          # Invalid parameter at 'ImageManifest' ... Invalid JSON syntax`, which
+          # names neither the field nor the reason and cost a failed release to
+          # find. oras does not put them there either.
+          oras manifest fetch localhost:5111/ci/example:v0.0.0 --plain-http \
+            | jq -e '.config | has("annotations") | not' >/dev/null
+          oras manifest fetch localhost:5111/ci/example:v0.0.0 --plain-http \
+            | jq -e '.layers[0].annotations."org.opencontainers.image.title" == "content.tar"' >/dev/null
 
       # The build EMITS a document, with `modules` filled in, and that document is
       # what a deployment reads. Only the hand-written source was ever validated,

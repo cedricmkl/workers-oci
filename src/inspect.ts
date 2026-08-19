@@ -81,6 +81,18 @@ export const describe = ({ manifest, digest, app }: Inspection): string => {
   if ((app.runtime.compatibility_flags ?? []).length > 0) {
     lines.push(`               flags ${(app.runtime.compatibility_flags ?? []).join(", ")}`);
   }
+  if (app.runtime.cache !== undefined) {
+    const cache = app.runtime.cache;
+    // Only what the document actually says. Neither member has a default here,
+    // so printing one it left out would report a decision nobody made.
+    const stated = [
+      cache.enabled === undefined ? null : `edge cache ${cache.enabled ? "on" : "off"}`,
+      cache.cross_version_cache === undefined
+        ? null
+        : `across versions ${cache.cross_version_cache ? "shared" : "not shared"}`,
+    ].filter((one): one is string => one !== null);
+    if (stated.length > 0) lines.push(`               ${stated.join(", ")}`);
+  }
   lines.push("");
 
   lines.push("  workers");

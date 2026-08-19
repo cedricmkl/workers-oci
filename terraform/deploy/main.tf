@@ -126,7 +126,7 @@ locals {
   # supply and this module can bind them itself.
   self_bound = {
     for k, r in local.declared : k => { type = r.kind, name = k }
-    if contains(["ai", "browser", "version_metadata"], r.kind)
+    if contains(["ai", "browser", "version_metadata", "images"], r.kind)
   }
 
   binding_map = {
@@ -270,6 +270,15 @@ resource "cloudflare_worker_version" "this" {
   main_module = local.modules[each.key][0].name
   modules     = local.modules[each.key]
   bindings    = local.bindings[each.key]
+
+  # Tri-state, and `null` is the third state rather than a missing value: the
+  # attribute is Optional AND Computed, so omitting it keeps whatever the
+  # platform holds. An artifact that says nothing about caching therefore does
+  # not turn it off, which is what an artifact saying nothing should mean.
+  cache_options = try(local.artifact.runtime.cache, null) == null ? null : {
+    enabled             = try(local.artifact.runtime.cache.enabled, null)
+    cross_version_cache = try(local.artifact.runtime.cache.cross_version_cache, null)
+  }
 
   limits = try(local.artifact.runtime.limits, null)
   placement = try(local.artifact.runtime.placement, null) == null ? null : {

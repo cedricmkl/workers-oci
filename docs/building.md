@@ -63,6 +63,26 @@ Check it before committing:
 workers-oci verify worker-app.json
 ```
 
+### The runtime block
+
+`compatibility_date`, `compatibility_flags`, `limits` and `placement` are facts
+about the code, which is why a deployment cannot override any of them.
+
+`cache` is the platform edge cache in front of the Worker, and it is here for the
+same reason: a response is only ever cached because the code asked for it, so
+code that never calls the Cache API is unaffected by the switch being on.
+
+```json
+"cache": { "enabled": true }
+```
+
+Both members are tri-state. Omitting one leaves whatever the platform holds,
+which is not the same statement as writing `false`. `cross_version_cache` is the
+half worth thinking about: with it off, the worker version is part of the cache
+key, so a deploy starts from a cold cache and can never serve a response produced
+by earlier code. That is what makes a long `stale-while-revalidate` window safe
+across a deploy, and turning it on is what takes the property away.
+
 ### Marking a resource
 
 `optional` means the code runs without it and a deployment may leave it unbound.
@@ -72,7 +92,7 @@ a claim in the document that a deployment may act on. Nothing in the two
 Terraform modules reads it. `workers-oci inspect` prints it. A cache is
 rebuildable, the table holding people's accounts is not.
 
-Twelve kinds:
+Thirteen kinds:
 
 | kind | |
 |---|---|
@@ -81,7 +101,7 @@ Twelve kinds:
 | `assets` | requires `directory`. Takes `not_found_handling`, `html_handling` and `run_worker_first`. One per artifact, and the files ride in the content layer. |
 | `ratelimit` | requires `limit` and `period`. `period` is 10 or 60 seconds. |
 | `hyperdrive`, `vectorize`, `analytics_engine` | the deployment supplies the id or name |
-| `ai`, `browser`, `version_metadata` | no account-level resource behind them |
+| `ai`, `browser`, `version_metadata`, `images` | no account-level resource behind them |
 
 Every binding except `assets` needs a value at deploy time, or `optional: true`
 here.

@@ -15,6 +15,25 @@ export type WorkerApp = {
 export type Runtime = {
   readonly compatibility_date: string;
   readonly compatibility_flags?: readonly string[];
+  readonly cache?: RuntimeCache;
+};
+
+/**
+ * The platform edge cache in front of the Worker, which is a fact about the
+ * BUILD rather than about a deployment: a response is only ever cached because
+ * the code asked for it, and code that never calls the Cache API is unaffected
+ * by the switch being on.
+ *
+ * `cross_version_cache` is the dangerous half and defaults to the platform's
+ * own value rather than to anything here. With it off, the worker version is
+ * part of the cache key, so a deploy starts from a cold cache and can never
+ * serve a response produced by earlier code. Turning it on is what makes a long
+ * stale-while-revalidate window survive a deploy, and it is also what makes a
+ * deploy able to serve the previous build.
+ */
+export type RuntimeCache = {
+  readonly enabled?: boolean;
+  readonly cross_version_cache?: boolean;
 };
 
 export type Migration = { readonly binding: string; readonly directory: string };
@@ -31,6 +50,7 @@ export type ResourceKind =
   | "ai"
   | "browser"
   | "version_metadata"
+  | "images"
   | "ratelimit";
 
 export type Resource = {

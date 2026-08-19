@@ -153,6 +153,47 @@ describe("constraints the schema states and the validator now enforces", () => {
     { ...base, runtime: { compatibility_date: "2026-07-14", placement: { mode: "dumb" } } },
     "must be one of smart",
   );
+
+  refused(
+    "a cache member that is not a boolean",
+    { ...base, runtime: { compatibility_date: "2026-07-14", cache: { enabled: "yes" } } },
+    "runtime.cache.enabled must be true or false",
+  );
+
+  refused(
+    "a cache key the schema does not define",
+    { ...base, runtime: { compatibility_date: "2026-07-14", cache: { ttl: 300 } } },
+    "runtime.cache",
+  );
+
+  refused(
+    "an images binding carrying a key that belongs to another kind",
+    { ...base, resources: [{ binding: "IMAGES", kind: "images", directory: "public" }] },
+    "directory",
+  );
+});
+
+/**
+ * The kinds the platform supplies itself. A deployment has nothing to pass for
+ * one of these, so the binding name is the whole declaration, and the failure
+ * they guard against is a kind the validator refuses while the schema permits
+ * it — which is what happened to seven of them before this file existed.
+ */
+describe("kinds with no deployment input", () => {
+  for (const kind of ["ai", "browser", "version_metadata", "images"]) {
+    test(`${kind} is accepted with a binding and nothing else`, () => {
+      expect(problems({ ...base, resources: [{ binding: "B", kind }] })).toEqual([]);
+    });
+  }
+
+  test("runtime.cache is accepted with either member", () => {
+    expect(
+      problems({
+        ...base,
+        runtime: { compatibility_date: "2026-07-14", cache: { enabled: true, cross_version_cache: false } },
+      }),
+    ).toEqual([]);
+  });
 });
 
 /**

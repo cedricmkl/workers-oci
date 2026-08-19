@@ -40,6 +40,7 @@ const KINDS = new Set([
   "ai",
   "browser",
   "version_metadata",
+  "images",
   "ratelimit",
 ]);
 
@@ -208,9 +209,28 @@ export const validate = (input: unknown): WorkerApp => {
       }
     }
 
+    // A build fact rather than a deployment one: a response is cached because
+    // the code asked for it, so the switch belongs to whoever wrote the code.
+    // Both members are tri-state on purpose. Omitting one leaves the platform's
+    // own value alone, which is not the same statement as writing false.
+    const cache = runtime["cache"];
+    if (cache !== undefined) {
+      if (!isObject(cache)) bad("runtime.cache must be an object");
+      else {
+        for (const key of ["enabled", "cross_version_cache"]) {
+          if (cache[key] !== undefined && typeof cache[key] !== "boolean") {
+            bad(`runtime.cache.${key} must be true or false`);
+          }
+        }
+        for (const message of unknownKeys(cache, ["enabled", "cross_version_cache"], "runtime.cache")) {
+          bad(message);
+        }
+      }
+    }
+
     for (const message of unknownKeys(
       runtime,
-      ["compatibility_date", "compatibility_flags", "limits", "placement"],
+      ["compatibility_date", "compatibility_flags", "limits", "placement", "cache"],
       "runtime",
     )) {
       bad(message);

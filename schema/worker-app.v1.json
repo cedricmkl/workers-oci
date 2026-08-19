@@ -90,6 +90,19 @@
               ]
             }
           }
+        },
+        "cache": {
+          "description": "The platform edge cache in front of the Worker. A property of the code rather than of the deployment: a response is only ever cached because the code asked for it, and code that never calls the Cache API is unaffected by the switch being on. Both members are tri-state — omitting one leaves the platform's own value alone, which is not the same statement as writing false. `cross_version_cache` is the dangerous half: with it off the worker version is part of the cache key, so a deploy starts cold and can never serve a response produced by earlier code.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "cross_version_cache": {
+              "type": "boolean"
+            }
+          }
         }
       }
     },
@@ -121,6 +134,7 @@
               "ai",
               "browser",
               "version_metadata",
+              "images",
               "ratelimit"
             ]
           },
@@ -156,6 +170,7 @@
                     "ai",
                     "browser",
                     "version_metadata",
+                    "images",
                     "ratelimit"
                   ]
                 }
@@ -291,7 +306,7 @@
             }
           },
           {
-            "comment": "Kinds carrying nothing beyond the common fields. ai, browser and version_metadata need no deployment input at all.",
+            "comment": "Kinds carrying nothing beyond the common fields. ai, browser, version_metadata and images need no deployment input at all: the binding name is the whole declaration and the platform supplies what sits behind it.",
             "if": {
               "properties": {
                 "kind": {
@@ -304,7 +319,8 @@
                     "analytics_engine",
                     "ai",
                     "browser",
-                    "version_metadata"
+                    "version_metadata",
+                    "images"
                   ]
                 }
               },

@@ -10,6 +10,7 @@ locals {
   missing_bindings = [
     for k, r in local.declared : k
     if r.kind != "assets"
+    && r.kind != "durable_object"
     && !contains(keys(local.self_bound), k)
     && !try(r.optional, false)
     && !contains(keys(var.bindings), k)
@@ -87,16 +88,32 @@ locals {
     ]
   ])
 
-  do_classes = [
-    for r in try(local.artifact.resources, []) : r.binding
-    if try(r.kind, "") == "durable_object"
+  # A Durable Object binding names a class in this artifact and nothing the
+  # deployment owns, so this module makes it. One supplied through `bindings`
+  # as well would be a second opinion about the same name.
+  supplied_do = sort(setintersection(keys(var.bindings), keys(local.do_resources)))
+
+  # The live script carries a migration tag this artifact does not list. Either
+  # the artifact is OLDER than what is deployed, or somebody applied a tag by
+  # hand. Sending steps from here would replay or skip lifecycle changes, and
+  # a replayed step is refused anyway (10079).
+  unknown_tags = [
+    for w in local.do_workers : "${local.script[w]} is on ${local.applied_tag[w]}, and the artifact lists ${join(", ", local.do_tags[w])}"
+    if local.applied_index[w] == -2
+  ]
+
+  # A class lifecycle change is atomic on Cloudflare's side and cannot be
+  # rolled out to a share of traffic: the version carrying it is deployed at
+  # 100% when it is created.
+  gradual_migrations = [
+    for w in local.do_workers : local.script[w]
+    if length(local.pending[w]) > 0 && var.rollout_percentage != 100
   ]
 
   # `features` names extensions the artifact RELIES on, so an unrecognised one
   # has to be refused rather than ignored: ignoring it deploys a configuration
-  # that is missing whatever the feature was for, and nothing later says so. This
-  # module implements no feature, so every entry is unrecognised.
-  unknown_features = try(local.artifact.features, [])
+  # that is missing whatever the feature was for, and nothing later says so.
+  unknown_features = setsubtract(try(local.artifact.features, []), ["durable_objects"])
 
   # A module the artifact names and `artifact_dir` does not hold. Without this
   # the plan is clean and the upload fails on apply, after the account already
@@ -191,11 +208,19 @@ resource "terraform_data" "validate" {
       error_message = "Two modules of one worker upload under the same name: ${join(", ", local.duplicate_modules)}. Module names are relative to the entry module's directory, so a file beside the entry and one at the layer root can collide."
     }
 
-    # Rejected at build time too, so this only fires on an artifact built by
-    # something else.
     precondition {
-      condition     = length(local.do_classes) == 0
-      error_message = "The artifact declares Durable Objects (${join(", ", local.do_classes)}), which the versions API refuses to create. See docs/artifact.md."
+      condition     = length(local.supplied_do) == 0
+      error_message = "`bindings` supplies ${join(", ", local.supplied_do)}, which the artifact declares as a Durable Object. This module binds those itself, on the worker that exports the class."
+    }
+
+    precondition {
+      condition     = length(local.unknown_tags) == 0
+      error_message = "A live script carries a Durable Object migration tag the artifact does not declare: ${join("; ", local.unknown_tags)}. Deploy an artifact whose durable_object_migrations include that tag."
+    }
+
+    precondition {
+      condition     = length(local.gradual_migrations) == 0
+      error_message = "Durable Object migrations are pending for ${join(", ", local.gradual_migrations)}, and a class lifecycle change cannot be rolled out gradually. Set rollout_percentage to 100 for this apply."
     }
   }
 }

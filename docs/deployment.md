@@ -141,7 +141,7 @@ CPU limits and placement come from the artifact, as `runtime.limits.cpu_ms` and
 
 | output | |
 |---|---|
-| `workers` | per worker name: the script `name`, the worker `id`, the live `version_id`, and its `hostnames` and `routes` |
+| `workers` | per worker name: the script `name`, the worker `id`, the live `version_id`, its `hostnames` and `routes`, and the Durable Object `migration_tag` it ends on |
 | `app` | the deployment name and the worker names the artifact ships |
 | `generated_secrets` | values created for the artifact's `generate` secrets, by name. Sensitive. |
 
@@ -189,7 +189,66 @@ It also refuses:
 - routing configured for a worker the artifact does not ship
 - a hostname pointed at a worker marked `routable: false`
 - a worker consuming a queue with no id in `queue_ids`
-- an artifact declaring Durable Objects
+- a `features` entry it does not implement (it implements `durable_objects`)
+- a Durable Object binding supplied through `bindings`, which it makes itself
+- a live script on a Durable Object migration tag the artifact does not list
+- pending Durable Object migrations with `rollout_percentage` below 100
+
+## Durable Objects
+
+Needs the Cloudflare provider at 5.26.0 or later, for `deploy` on
+`cloudflare_worker_version`. The module states that constraint, so an older lock
+file fails `init` rather than the apply.
+
+The binding is made by the module, on the worker that exports the class, from
+the artifact's `class_name`. Nothing goes in `bindings` for it, and nothing in
+`terraform/resources`: a namespace is created by a migration, not by an account
+resource.
+
+The migrations are the interesting part. Cloudflare applies a class migration
+when the version carrying it is **deployed**, so a version that creates a class
+and binds it in one upload is refused (`100123`,
+[terraform-provider-cloudflare#6852](https://github.com/cloudflare/terraform-provider-cloudflare/issues/6852)).
+The versions endpoint called with `deploy=true` creates and deploys in one step,
+which is what `wrangler deploy` does, and accepts both. These were measured
+against the API before the design settled on them:
+
+| upload | result |
+|---|---|
+| pending steps and the binding, no deploy | refused, 100123 |
+| pending steps and the binding, `deploy=true` | accepted, live, the script's tag moves |
+| that same version deployed again | refused, 10079: its steps start from a tag the script has left |
+| no migrations at all, onto a script with a tag | uploads, then its deployment is refused, 10210 |
+| `old_tag = new_tag = <current>`, no steps | accepted, deployable any number of times |
+| a step already applied, sent again | refused, 10079 |
+
+So a worker declaring migrations gets two versions:
+
+- `cloudflare_worker_version.migrate` carries the steps after the tag the live
+  script is on, read from the account at plan time, and is created with
+  `deploy = true` when there are any. It ignores its own `migrations` and
+  `deploy` afterwards, which is what makes the apply after a migration a no-op.
+- `cloudflare_worker_version.this` is pinned to the last tag with no steps,
+  waits for `migrate`, and is what `cloudflare_workers_deployment` puts live,
+  exactly as for any other worker.
+
+`migrate` is also replaced whenever the code changes, because the provider
+checksums every module file at plan time and that forces a replacement past
+`ignore_changes`. With nothing pending it is created without being deployed, so
+a release of a worker with Durable Objects leaves one extra, inert version in
+the dashboard, labelled with the tag it was built against.
+
+Things this means for a deployment:
+
+- A migration cannot roll out gradually. With steps pending the plan refuses a
+  `rollout_percentage` below 100.
+- Rolling back past a migration is not something Cloudflare allows, whatever
+  the tool.
+- A live tag the artifact does not list is refused: the artifact is older than
+  what is deployed, or something else applied a tag. Deploy one whose list
+  includes it.
+- An artifact that predates Durable Objects plans exactly as before. The account
+  is only read when a worker declares migrations.
 
 ## Secrets
 

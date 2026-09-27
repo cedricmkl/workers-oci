@@ -7,6 +7,9 @@ output "workers" {
       version_id = cloudflare_worker_version.this[w.name].id
       hostnames  = try(var.domains[w.name], [])
       routes     = try(var.routes[w.name], [])
+      # The Durable Object migration tag the script is on after this apply, or
+      # null for a worker that declares none.
+      migration_tag = try(local.last_tag[w.name], null)
     }
   }
 }

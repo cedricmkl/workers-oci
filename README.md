@@ -4,8 +4,8 @@ A format for shipping a Cloudflare Worker and the resources it binds to as an OC
 artifact, plus the tooling to build, publish and deploy one.
 
 The unit is a **worker-app**: one or more scripts, the D1 databases, KV
-namespaces, R2 buckets and queues behind them, and the variables and secrets they
-read. A build turns that into a single artifact addressed by digest. Deploying it
+namespaces, R2 buckets and queues behind them, the Durable Object classes they
+export, and the variables and secrets they read. A build turns that into a single artifact addressed by digest. Deploying it
 is supplying an account, some ids and some values.
 
 ```
@@ -69,8 +69,8 @@ leave out of `names` is untouched, and naming a binding of any other kind fails
 the plan with a message saying so.
 
 **`terraform/deploy`** uploads each script as a version, resolves its bindings,
-points the live deployment at it, and attaches cron triggers, queue consumers,
-custom domains and routes.
+applies pending Durable Object migrations, points the live deployment at it, and
+attaches cron triggers, queue consumers, custom domains and routes.
 
 ```hcl
 module "resources" {
@@ -152,10 +152,12 @@ primitives to put it live. Zones, accounts, tokens, naming conventions and the
 wiring between separate applications belong to whatever already manages your
 account.
 
-Durable Objects are unsupported in v1. The Cloudflare provider cannot create a
-worker version that declares one, so `build` rejects a config document that
-declares a `durable_object` kind or carries a `class_name` key. Details in
-[docs/artifact.md](docs/artifact.md#limits).
+Durable Objects are supported from v0.6.0 for a class one of the artifact's own
+workers exports, with its migrations in the document. `terraform/deploy` then
+needs the Cloudflare provider at 5.26.0 or later. How the migration reaches the
+account without tripping the versions API is in
+[docs/deployment.md](docs/deployment.md#durable-objects), and what the format
+still leaves out is in [docs/artifact.md](docs/artifact.md#limits).
 
 ## License
 

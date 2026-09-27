@@ -3,6 +3,7 @@ export type WorkerApp = {
   readonly schema_version: 1;
   readonly name: string;
   readonly description?: string;
+  readonly features?: readonly string[];
   readonly runtime: Runtime;
   readonly resources?: readonly Resource[];
   readonly vars?: readonly VarDecl[];
@@ -51,7 +52,8 @@ export type ResourceKind =
   | "browser"
   | "version_metadata"
   | "images"
-  | "ratelimit";
+  | "ratelimit"
+  | "durable_object";
 
 export type Resource = {
   readonly binding: string;
@@ -68,6 +70,13 @@ export type Resource = {
   readonly not_found_handling?: "none" | "404-page" | "single-page-application";
   readonly html_handling?: "auto-trailing-slash" | "force-trailing-slash" | "drop-trailing-slash" | "none";
   readonly run_worker_first?: boolean | readonly string[];
+  /** durable_object: the exported class the namespace runs. */
+  readonly class_name?: string;
+  /**
+   * durable_object: the worker in this artifact that exports the class and owns
+   * its migrations. Required when the artifact ships more than one worker.
+   */
+  readonly worker?: string;
 };
 
 export type VarDecl = {
@@ -93,6 +102,25 @@ export type WorkerDecl = {
   readonly consumes?: readonly (string | Consumer)[];
   readonly crons?: readonly string[];
   readonly routable?: boolean;
+  readonly durable_object_migrations?: readonly DurableObjectMigration[];
+};
+
+/**
+ * One Durable Object class lifecycle step, in Cloudflare's own shape: what a
+ * `migrations` entry in a wrangler config says, per script.
+ *
+ * NOT the D1 `migrations` at the top of the document. Those are SQL files a
+ * deployer applies to a database; these travel with the script upload and are
+ * applied by Cloudflare when the version carrying them is deployed. A tag once
+ * deployed is never edited, only followed by a new one.
+ */
+export type DurableObjectMigration = {
+  readonly tag: string;
+  readonly new_sqlite_classes?: readonly string[];
+  readonly new_classes?: readonly string[];
+  readonly deleted_classes?: readonly string[];
+  readonly renamed_classes?: readonly { readonly from: string; readonly to: string }[];
+  readonly transferred_classes?: readonly { readonly from: string; readonly from_script: string; readonly to: string }[];
 };
 
 /**

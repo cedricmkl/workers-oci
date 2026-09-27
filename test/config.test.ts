@@ -88,12 +88,6 @@ describe("validate", () => {
     );
   });
 
-  test("rejects Durable Objects with an explanation", () => {
-    expect(problems({ ...base, resources: [{ binding: "ROOM", kind: "durable_object" }] })).toContainEqual(
-      expect.stringContaining("6852"),
-    );
-  });
-
   test("rejects a generate block that is too small", () => {
     expect(problems({ ...base, secrets: [{ name: "K", generate: { bytes: 4 } }] })).toContainEqual(
       expect.stringContaining("between 16 and 512"),
@@ -230,3 +224,156 @@ describe("agreement with the normative schema", () => {
     ).toContainEqual(expect.stringContaining("must be a list"));
   });
 })
+
+/**
+ * A Durable Object is a binding AND a class lifecycle. The binding is a resource
+ * like any other; the lifecycle is the worker's `durable_object_migrations`,
+ * applied by Cloudflare when the version carrying them is deployed. Each refusal
+ * below is a document that would otherwise reach the API and fail there, or
+ * worse, deploy without the namespace its code expects.
+ */
+describe("Durable Objects", () => {
+  const live = {
+    ...base,
+    features: ["durable_objects"],
+    resources: [{ binding: "LIVE", kind: "durable_object", class_name: "Live" }],
+    workers: [
+      { name: "w", main: "dist/i.js", durable_object_migrations: [{ tag: "v1", new_sqlite_classes: ["Live"] }] },
+    ],
+  };
+
+  test("accepts a binding to a class its worker's migration creates", () => {
+    expect(problems(live)).toEqual([]);
+  });
+
+  test("accepts a class that a later step renames into existence", () => {
+    expect(
+      problems({
+        ...live,
+        workers: [
+          {
+            name: "w",
+            main: "dist/i.js",
+            durable_object_migrations: [
+              { tag: "v1", new_sqlite_classes: ["Old"] },
+              { tag: "v2", renamed_classes: [{ from: "Old", to: "Live" }] },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  test("refuses a document that does not name the feature", () => {
+    const { features: _, ...without } = live;
+    expect(problems(without)).toContainEqual(expect.stringContaining('"durable_objects" feature'));
+  });
+
+  test("refuses migrations alone without the feature, since an older deployer would skip them", () => {
+    expect(
+      problems({
+        ...base,
+        workers: [{ name: "w", main: "dist/i.js", durable_object_migrations: [{ tag: "v1", new_sqlite_classes: ["A"] }] }],
+      }),
+    ).toContainEqual(expect.stringContaining('"durable_objects" feature'));
+  });
+
+  test("refuses a binding to a class no migration creates", () => {
+    expect(
+      problems({ ...live, resources: [{ binding: "LIVE", kind: "durable_object", class_name: "Other" }] }),
+    ).toContainEqual(expect.stringContaining("no durable_object_migrations entry on worker w creates"));
+  });
+
+  test("refuses a binding to a class a later step deletes", () => {
+    expect(
+      problems({
+        ...live,
+        workers: [
+          {
+            name: "w",
+            main: "dist/i.js",
+            durable_object_migrations: [
+              { tag: "v1", new_sqlite_classes: ["Live"] },
+              { tag: "v2", deleted_classes: ["Live"] },
+            ],
+          },
+        ],
+      }),
+    ).toContainEqual(expect.stringContaining("no durable_object_migrations entry"));
+  });
+
+  test("refuses a binding without a class name", () => {
+    expect(problems({ ...live, resources: [{ binding: "LIVE", kind: "durable_object" }] })).toContainEqual(
+      expect.stringContaining("class_name"),
+    );
+  });
+
+  test("refuses a tag used twice", () => {
+    expect(
+      problems({
+        ...live,
+        workers: [
+          {
+            name: "w",
+            main: "dist/i.js",
+            durable_object_migrations: [
+              { tag: "v1", new_sqlite_classes: ["Live"] },
+              { tag: "v1", new_sqlite_classes: ["Other"] },
+            ],
+          },
+        ],
+      }),
+    ).toContainEqual(expect.stringContaining("used twice"));
+  });
+
+  test("refuses a step that changes nothing", () => {
+    expect(
+      problems({
+        ...live,
+        workers: [
+          { name: "w", main: "dist/i.js", durable_object_migrations: [{ tag: "v1", new_sqlite_classes: ["Live"] }, { tag: "v2" }] },
+        ],
+      }),
+    ).toContainEqual(expect.stringContaining("changes nothing"));
+  });
+
+  test("refuses a misspelled step key", () => {
+    expect(
+      problems({
+        ...live,
+        workers: [
+          {
+            name: "w",
+            main: "dist/i.js",
+            durable_object_migrations: [{ tag: "v1", new_sqlite_classes: ["Live"], new_sqlite_class: ["X"] }],
+          },
+        ],
+      }),
+    ).toContainEqual(expect.stringContaining("the schema does not define"));
+  });
+
+  test("requires the owning worker when the artifact ships two", () => {
+    expect(
+      problems({
+        ...live,
+        workers: [...live.workers, { name: "other", main: "dist/o.js" }],
+      }),
+    ).toContainEqual(expect.stringContaining(".worker is required"));
+  });
+
+  test("refuses a second worker naming the binding", () => {
+    expect(
+      problems({
+        ...live,
+        resources: [{ binding: "LIVE", kind: "durable_object", class_name: "Live", worker: "w" }],
+        workers: [...live.workers, { name: "other", main: "dist/o.js", bindings: ["LIVE"] }],
+      }),
+    ).toContainEqual(expect.stringContaining("only deployed on the worker that owns the class"));
+  });
+
+  test("refuses class_name on a kind other than durable_object", () => {
+    expect(
+      problems({ ...base, resources: [{ binding: "DB", kind: "d1", class_name: "X" }] }),
+    ).toContainEqual(expect.stringContaining("the schema does not define"));
+  });
+});

@@ -105,6 +105,11 @@ export const describe = ({ manifest, digest, app }: Inspection): string => {
         ? `consumes ${w.consumes.map((c) => (typeof c === "string" ? c : c.binding)).join(", ")}`
         : null,
       w.routable === false ? "not routable" : null,
+      // The last tag is what the live script carries once this is deployed,
+      // which is the one fact about the lifecycle a reader usually wants.
+      (w.durable_object_migrations ?? []).length > 0
+        ? `Durable Object migrations to ${w.durable_object_migrations?.at(-1)?.tag}`
+        : null,
     ].filter((n): n is string => n !== null);
     lines.push(`    ${w.name.padEnd(16)} ${w.main}${notes.length > 0 ? `  (${notes.join("; ")})` : ""}`);
   }
@@ -117,6 +122,7 @@ export const describe = ({ manifest, digest, app }: Inspection): string => {
         r.optional === true ? "optional" : null,
         r.rebuildable === true ? "rebuildable" : null,
         r.directory !== undefined ? `from ${r.directory}` : null,
+        r.class_name !== undefined ? `class ${r.class_name}${r.worker !== undefined ? ` on ${r.worker}` : ""}` : null,
       ].filter((n): n is string => n !== null);
       lines.push(`    ${r.binding.padEnd(16)} ${r.kind}${notes.length > 0 ? `  (${notes.join("; ")})` : ""}`);
     }

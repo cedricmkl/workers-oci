@@ -92,7 +92,7 @@ a claim in the document that a deployment may act on. Nothing in the two
 Terraform modules reads it. `workers-oci inspect` prints it. A cache is
 rebuildable, the table holding people's accounts is not.
 
-Thirteen kinds:
+Fourteen kinds:
 
 | kind | |
 |---|---|
@@ -102,9 +102,10 @@ Thirteen kinds:
 | `ratelimit` | requires `limit` and `period`. `period` is 10 or 60 seconds. |
 | `hyperdrive`, `vectorize`, `analytics_engine` | the deployment supplies the id or name |
 | `ai`, `browser`, `version_metadata`, `images` | no account-level resource behind them |
+| `durable_object` | requires `class_name`. Takes `worker`, required when the artifact ships more than one. See [Durable Objects](#durable-objects). |
 
-Every binding except `assets` needs a value at deploy time, or `optional: true`
-here.
+Every binding except `assets` and `durable_object` needs a value at deploy time,
+or `optional: true` here.
 
 ### Marking a var
 
@@ -163,6 +164,61 @@ to different places, and the deployment names the queue they go to.
 `routable: false` says a script has no HTTP entry point worth publishing, which
 makes a hostname pointed at it a validation error rather than a live endpoint
 nobody meant to expose.
+
+`durable_object_migrations` is the class lifecycle of the Durable Objects this
+script exports. See the next section.
+
+### Durable Objects
+
+A Durable Object is two things in the document: a binding, which is a resource
+like any other, and the migrations that create its class, which belong to the
+worker exporting it.
+
+```json
+{
+  "features": ["durable_objects"],
+  "resources": [
+    { "binding": "LIVE", "kind": "durable_object", "class_name": "Live" }
+  ],
+  "workers": [
+    {
+      "name": "example",
+      "main": "dist/index.js",
+      "durable_object_migrations": [{ "tag": "v1", "new_sqlite_classes": ["Live"] }]
+    }
+  ]
+}
+```
+
+`durable_object_migrations` is what `migrations` says in a wrangler config, in
+the same shape: an ordered list of tagged steps, each carrying any of
+`new_sqlite_classes`, `new_classes`, `deleted_classes`, `renamed_classes`
+(`{ "from", "to" }`) and `transferred_classes` (`{ "from", "from_script", "to" }`).
+It is NOT the top-level `migrations`, which is SQL for a D1 database. These
+travel with the script, and Cloudflare applies them when the version carrying
+them is deployed.
+
+- A tag once released is never edited or removed, only followed by a new one.
+  The deployment reads the tag the live script carries and sends the steps
+  after it, so a step whose tag is gone is a step nobody can find, and a live
+  tag the artifact does not list is refused at plan time.
+- `new_sqlite_classes` is the only kind the Workers Free plan offers.
+  `new_classes` creates the legacy key-value backend, on paid plans only.
+- `class_name` has to be a class some step leaves in existence. `build` checks
+  that, walking the steps in order, because Cloudflare refuses a binding to a
+  class no migration created.
+- The binding is deployed on the worker that exports the class and on no other.
+  Naming it in another worker's `bindings` is refused: that worker's version
+  would have to wait for the first one's deployment, which one apply cannot
+  order.
+- The document must name the `durable_objects` feature. A deployer that
+  predates it would read `durable_object_migrations` as an unknown key and
+  deploy the code without the namespace it expects. Naming the feature makes
+  such a deployer refuse instead.
+
+Only the `migrations` form is supported, not wrangler's newer declarative
+`exports` map. The class still has to be exported from the entry module, which
+is the bundler's business.
 
 ## Bundling
 

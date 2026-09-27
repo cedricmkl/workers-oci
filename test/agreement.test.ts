@@ -285,6 +285,31 @@ describe("inspect reads both directory shapes", () => {
     expect(describeArtifact(result)).toContain("example");
   });
 
+  test("a Durable Object and the tag its migrations end on", async () => {
+    const result = await inspect(
+      dir({
+        "worker-app.json": {
+          ...app,
+          features: ["durable_objects"],
+          resources: [{ binding: "LIVE", kind: "durable_object", class_name: "Live" }],
+          workers: [
+            {
+              name: "example",
+              main: "dist/index.js",
+              durable_object_migrations: [
+                { tag: "v1", new_sqlite_classes: ["Live"] },
+                { tag: "v2", new_sqlite_classes: ["Other"] },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    const text = describeArtifact(result);
+    expect(text).toContain("class Live");
+    expect(text).toContain("Durable Object migrations to v2");
+  });
+
   test("a built directory", async () => {
     const manifest = { schemaVersion: 2, layers: [{ size: 10 }], annotations: { "org.opencontainers.image.created": "x" } };
     const result = await inspect(dir({ "config.json": app, "manifest.json": manifest }));

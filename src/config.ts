@@ -42,6 +42,7 @@ const KINDS = new Set([
   "version_metadata",
   "images",
   "ratelimit",
+  "durable_object",
 ]);
 
 /** `$defs/identifier`. A binding name, and the schema caps it at 64. */
@@ -50,12 +51,16 @@ const IDENTIFIER_MAX = 64;
 const DNS_NAME_MAX = 54;
 const DESCRIPTION_MAX = 300;
 /**
- * Feature names this version implements. Empty, and that is the correct state
- * for a v1 that has no optional behaviour yet: the point of the list is that
- * adding a name here is what makes an artifact using it deployable, so an older
- * tool refuses it instead of deploying most of it.
+ * Feature names this version implements. Adding a name here is what makes an
+ * artifact using it deployable, so an older tool refuses it instead of
+ * deploying most of it.
+ *
+ * `durable_objects` is the first. An artifact declaring a Durable Object has to
+ * name it, because a deployer that predates it would otherwise upload the
+ * script and silently skip the class migrations the code depends on.
  */
-const FEATURES = new Set<string>([]);
+export const DURABLE_OBJECTS_FEATURE = "durable_objects";
+const FEATURES = new Set<string>([DURABLE_OBJECTS_FEATURE]);
 /** `bootstrap.endpoint`. A path with no whitespace in it. */
 const ENDPOINT = /^\/[^\s]*$/;
 
@@ -242,6 +247,8 @@ export const validate = (input: unknown): WorkerApp => {
   const resources = input["resources"] ?? [];
   const bindings = new Set<string>();
   let assetsSeen = false;
+  // Checked against the workers once those have been read.
+  const durableObjects: { at: string; binding: string; className: unknown; worker: unknown }[] = [];
 
   if (!Array.isArray(resources)) {
     bad("resources must be a list");
@@ -324,14 +331,20 @@ export const validate = (input: unknown): WorkerApp => {
           bad(`${at}.period must be 10 or 60 seconds, which is what the runtime offers: ${JSON.stringify(raw["period"])}`);
         }
         for (const message of unknownKeys(raw, [...common, "limit", "period"], at)) bad(message);
+      } else if (kind === "durable_object") {
+        const className = raw["class_name"];
+        if (typeof className !== "string" || !BINDING.test(className)) {
+          bad(`${at}.class_name must name the exported class, a JavaScript identifier: ${JSON.stringify(className)}`);
+        }
+        if (raw["worker"] !== undefined && typeof raw["worker"] !== "string") {
+          bad(`${at}.worker must be the name of one of this artifact's workers`);
+        }
+        if (typeof binding === "string") {
+          durableObjects.push({ at, binding, className, worker: raw["worker"] });
+        }
+        for (const message of unknownKeys(raw, [...common, "class_name", "worker"], at)) bad(message);
       } else if (typeof kind === "string" && KINDS.has(kind)) {
         for (const message of unknownKeys(raw, common, at)) bad(message);
-      }
-
-      if (kind === "durable_object" || raw["class_name"] !== undefined) {
-        bad(
-          `${at} declares a Durable Object. The Cloudflare provider cannot create a worker version that declares one (terraform-provider-cloudflare#6852), so workers-oci v1 cannot deploy it.`,
-        );
       }
     }
   }
@@ -423,6 +436,10 @@ export const validate = (input: unknown): WorkerApp => {
 
   const workers = input["workers"];
   const workerNames = new Set<string>();
+  // Per worker: the classes its Durable Object migrations leave in existence,
+  // and whether it declared any migrations at all.
+  const liveClasses = new Map<string, Set<string>>();
+  let declaresMigrations = false;
 
   if (!Array.isArray(workers) || workers.length === 0) {
     bad("workers must be a list with at least one entry");
@@ -549,14 +566,71 @@ export const validate = (input: unknown): WorkerApp => {
         bad(`${at}.routable must be true or false`);
       }
 
+      const doMigrations = raw["durable_object_migrations"];
+      if (doMigrations !== undefined) {
+        declaresMigrations = true;
+        const live = checkDurableObjectMigrations(doMigrations, `${at}.durable_object_migrations`, bad);
+        if (typeof n === "string") liveClasses.set(n, live);
+      }
+
       for (const message of unknownKeys(
         raw,
-        ["name", "main", "modules", "bindings", "consumes", "crons", "routable", "description"],
+        ["name", "main", "modules", "bindings", "consumes", "crons", "routable", "description", "durable_object_migrations"],
         at,
       )) {
         bad(message);
       }
     }
+  }
+
+  // ── Durable Objects ───────────────────────────────────────────────────────
+
+  /*
+   * A namespace belongs to ONE script: the worker exporting the class, whose
+   * migrations created it. A binding on that worker names the class and nothing
+   * else. Binding it from a second worker in the same artifact would need that
+   * worker's version to wait for the first one's deployment, which one apply
+   * cannot order, so it is refused rather than left to fail halfway.
+   */
+  const workerList = Array.isArray(workers) ? workers.filter(isObject) : [];
+  for (const d of durableObjects) {
+    let owner: string | undefined;
+    if (d.worker === undefined) {
+      if (workerList.length === 1 && typeof workerList[0]?.["name"] === "string") owner = workerList[0]["name"] as string;
+      else if (workerList.length > 1) {
+        bad(`${d.at}.worker is required, because the artifact ships more than one worker and one of them exports ${String(d.className)}`);
+      }
+    } else if (typeof d.worker === "string") {
+      if (!workerNames.has(d.worker)) bad(`${d.at}.worker names ${JSON.stringify(d.worker)}, which is not one of this artifact's workers`);
+      else owner = d.worker;
+    }
+    if (owner === undefined || typeof d.className !== "string") continue;
+
+    if (!(liveClasses.get(owner) ?? new Set()).has(d.className)) {
+      bad(
+        `${d.at} binds class ${d.className}, which no durable_object_migrations entry on worker ${owner} creates. A namespace exists only once a migration has created it, and Cloudflare refuses a binding to a class that has none.`,
+      );
+    }
+    for (const w of workerList) {
+      if (w["name"] === owner || !Array.isArray(w["bindings"])) continue;
+      if ((w["bindings"] as unknown[]).includes(d.binding)) {
+        bad(
+          `worker ${String(w["name"])} binds ${d.binding}, a Durable Object that worker ${owner} exports. A Durable Object binding is only deployed on the worker that owns the class.`,
+        );
+      }
+    }
+  }
+
+  /*
+   * THE FEATURE IS REQUIRED, not merely allowed. A deployer that predates it
+   * reads `durable_object_migrations` as an unknown key and ignores it, so the
+   * script would go live without the namespace its code expects. Naming the
+   * feature is what makes such a deployer refuse instead.
+   */
+  if ((durableObjects.length > 0 || declaresMigrations) && !(Array.isArray(features) && features.includes(DURABLE_OBJECTS_FEATURE))) {
+    bad(
+      `the document declares Durable Objects and does not name the "${DURABLE_OBJECTS_FEATURE}" feature. Add it to \`features\`, so a deployer that cannot apply the class migrations refuses the artifact instead of deploying it without them.`,
+    );
   }
 
   // ── migrations and bootstrap ──────────────────────────────────────────────
@@ -700,6 +774,103 @@ export const validate = (input: unknown): WorkerApp => {
 
   if (p.length > 0) throw new ConfigError(p);
   return input as unknown as WorkerApp;
+};
+
+/**
+ * One worker's `durable_object_migrations`: an ordered list of tagged steps, in
+ * the shape the Cloudflare script upload API takes.
+ *
+ * Returns the classes left in existence after every step, in order, so a
+ * binding can be checked against something that will actually exist.
+ */
+const checkDurableObjectMigrations = (list: unknown, at: string, bad: (message: string) => void): Set<string> => {
+  const live = new Set<string>();
+  if (!Array.isArray(list)) {
+    bad(`${at} must be a list of tagged steps, in the order they were written`);
+    return live;
+  }
+  const tags = new Set<string>();
+  const listKeys = ["new_sqlite_classes", "new_classes", "deleted_classes"] as const;
+  for (const [i, step] of list.entries()) {
+    const where = `${at}[${i}]`;
+    if (!isObject(step)) {
+      bad(`${where} must be an object`);
+      continue;
+    }
+    const tag = step["tag"];
+    if (typeof tag !== "string" || tag === "" || /\s/.test(tag)) {
+      bad(`${where}.tag must be a non-empty string with no whitespace: ${JSON.stringify(tag)}`);
+    } else if (tags.has(tag)) {
+      bad(`${where}.tag ${tag} is used twice. Cloudflare records the last tag applied and finds its place in this list by it.`);
+    } else {
+      tags.add(tag);
+    }
+
+    let steps = 0;
+    const className = (value: unknown, label: string): string | null => {
+      if (typeof value !== "string" || !BINDING.test(value)) {
+        bad(`${label} must be a class name, a JavaScript identifier: ${JSON.stringify(value)}`);
+        return null;
+      }
+      return value;
+    };
+
+    for (const key of listKeys) {
+      const value = step[key];
+      if (value === undefined) continue;
+      for (const message of stringList(value, `${where}.${key}`, 1)) bad(message);
+      if (!Array.isArray(value)) continue;
+      steps += value.length;
+      for (const [j, item] of value.entries()) {
+        const c = className(item, `${where}.${key}[${j}]`);
+        if (c === null) continue;
+        if (key === "deleted_classes") live.delete(c);
+        else live.add(c);
+      }
+    }
+
+    const pairs: [string, readonly string[]][] = [
+      ["renamed_classes", ["from", "to"]],
+      ["transferred_classes", ["from", "from_script", "to"]],
+    ];
+    for (const [key, members] of pairs) {
+      const value = step[key];
+      if (value === undefined) continue;
+      if (!Array.isArray(value)) {
+        bad(`${where}.${key} must be a list of objects carrying ${members.join(", ")}`);
+        continue;
+      }
+      steps += value.length;
+      for (const [j, item] of value.entries()) {
+        const label = `${where}.${key}[${j}]`;
+        if (!isObject(item)) {
+          bad(`${label} must be an object carrying ${members.join(", ")}`);
+          continue;
+        }
+        for (const message of unknownKeys(item, members, label)) bad(message);
+        const to = className(item["to"], `${label}.to`);
+        if (key === "renamed_classes") {
+          const from = className(item["from"], `${label}.from`);
+          if (from !== null) live.delete(from);
+        } else {
+          // The source class lives on another script, so it is only a string.
+          if (typeof item["from"] !== "string" || item["from"] === "") bad(`${label}.from must be the class name on the source script`);
+          if (typeof item["from_script"] !== "string" || item["from_script"] === "") {
+            bad(`${label}.from_script must name the script the namespace moves from`);
+          }
+        }
+        if (to !== null) live.add(to);
+      }
+    }
+
+    if (steps === 0) {
+      bad(`${where} changes nothing. A step carries at least one of ${[...listKeys, "renamed_classes", "transferred_classes"].join(", ")}.`);
+    }
+    for (const message of unknownKeys(step, ["tag", ...listKeys, "renamed_classes", "transferred_classes"], where)) {
+      bad(message);
+    }
+  }
+  return live;
 };
 
 /** Every file path the document refers to, so `build` can check they are shipped. */

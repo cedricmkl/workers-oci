@@ -61,8 +61,9 @@ The top-level keys are `schema_version`, `name`, `description`, `features`,
 `runtime`, `resources`, `vars`, `secrets`, `workers`, `migrations` and
 `bootstrap`. `features` names extensions this artifact relies on, so a deployer
 that does not recognise one refuses rather than deploying a partial
-configuration. The CLI and the Terraform modules in this repository do not read
-it yet. Field-by-field rules are in [building.md](building.md).
+configuration. The one defined so far is `durable_objects`, which a document
+declaring a Durable Object must name. Field-by-field rules are in
+[building.md](building.md).
 
 `migrations` is a list, one entry per database, so an artifact carrying a schema
 for two D1 bindings can name both. `dead_letter` sits on `workers[].consumes[]`
@@ -174,12 +175,10 @@ modules from a path.
 
 ## Limits
 
-**Durable Objects.** The Cloudflare provider cannot create a worker version that
-declares a DO namespace, and the versions API answers `403 code 100123`
-([cloudflare/terraform-provider-cloudflare#6852](https://github.com/cloudflare/terraform-provider-cloudflare/issues/6852)).
-`workers-oci build` rejects a config document that declares a `durable_object`
-kind or carries a `class_name` key, and `terraform/deploy` refuses the same
-document at plan time.
+**Durable Objects, since v0.6.0.** A class owned by one of the artifact's own
+workers, created through `durable_object_migrations`. Wrangler's declarative
+`exports` map is not supported, and neither is binding a class another script
+owns: that joins two applications and goes through `extra_bindings`.
 
 **Containers and Workflow bindings.** Same API path, and neither has a settled
 shape in the provider.

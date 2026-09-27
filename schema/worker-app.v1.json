@@ -33,7 +33,7 @@
       "const": 1
     },
     "features": {
-      "description": "Named extensions this artifact relies on. A deployer that does not recognise one must refuse rather than deploy a partial configuration. Present so the format can grow without every addition becoming a schema_version bump; unknown keys elsewhere are ignored, and anything that changes deploy behaviour is named here instead.",
+      "description": "Named extensions this artifact relies on. A deployer that does not recognise one must refuse rather than deploy a partial configuration. Present so the format can grow without every addition becoming a schema_version bump; unknown keys elsewhere are ignored, and anything that changes deploy behaviour is named here instead. Known: `durable_objects`, required whenever the document declares a `durable_object` resource or any `workers[].durable_object_migrations`, because a deployer that predates it would ignore the migrations and deploy code without the namespaces it expects.",
       "type": "array",
       "items": {
         "type": "string"
@@ -135,7 +135,8 @@
               "browser",
               "version_metadata",
               "images",
-              "ratelimit"
+              "ratelimit",
+              "durable_object"
             ]
           },
           "description": {
@@ -171,7 +172,8 @@
                     "browser",
                     "version_metadata",
                     "images",
-                    "ratelimit"
+                    "ratelimit",
+                    "durable_object"
                   ]
                 }
               },
@@ -301,6 +303,39 @@
                     10,
                     60
                   ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "durable_object"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "required": [
+                "class_name"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "binding": true,
+                "kind": true,
+                "description": true,
+                "optional": true,
+                "rebuildable": true,
+                "class_name": {
+                  "description": "The exported class the namespace runs. A migration in the owning worker's `durable_object_migrations` must create it; the validator checks that, since JSON Schema cannot.",
+                  "$ref": "#/$defs/identifier"
+                },
+                "worker": {
+                  "description": "Which of this artifact's workers exports the class and owns its migrations. Required when the artifact ships more than one worker. The binding is deployed on that worker only.",
+                  "$ref": "#/$defs/dnsName"
                 }
               }
             }
@@ -550,6 +585,99 @@
             "description": "Whether a deployment may put a hostname in front of this script. A consumer-only worker sets this false, so a stray domain is a validation error rather than a live endpoint nobody meant to publish.",
             "type": "boolean",
             "default": true
+          },
+          "durable_object_migrations": {
+            "description": "Durable Object class lifecycle for this script, in the order the steps were written, in the shape of a wrangler `migrations` entry. NOT the top-level `migrations`, which are SQL for a D1 database: these travel with the script and Cloudflare applies them when the version carrying them is deployed. A deployment sends only the steps after the tag the live script already carries, so a tag once released is never edited or removed, only followed by a new one. Only SQLite-backed classes (`new_sqlite_classes`) are available on the Workers Free plan.",
+            "type": "array",
+            "default": [],
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag"
+              ],
+              "minProperties": 2,
+              "properties": {
+                "tag": {
+                  "description": "Unique within the list. Cloudflare records the last tag applied, and a deployment finds its place in this list by it.",
+                  "type": "string",
+                  "pattern": "^\\S+$"
+                },
+                "new_sqlite_classes": {
+                  "description": "Classes to create namespaces for, with SQLite storage. The only kind the Free plan offers.",
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/identifier"
+                  },
+                  "uniqueItems": true,
+                  "minItems": 1
+                },
+                "new_classes": {
+                  "description": "Classes to create namespaces for, with the legacy key-value storage. Paid plans only.",
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/identifier"
+                  },
+                  "uniqueItems": true,
+                  "minItems": 1
+                },
+                "deleted_classes": {
+                  "description": "Classes whose namespaces, and every object's data in them, are deleted.",
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/identifier"
+                  },
+                  "uniqueItems": true,
+                  "minItems": 1
+                },
+                "renamed_classes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "from",
+                      "to"
+                    ],
+                    "properties": {
+                      "from": {
+                        "$ref": "#/$defs/identifier"
+                      },
+                      "to": {
+                        "$ref": "#/$defs/identifier"
+                      }
+                    }
+                  }
+                },
+                "transferred_classes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "from",
+                      "from_script",
+                      "to"
+                    ],
+                    "properties": {
+                      "from": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "from_script": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "to": {
+                        "$ref": "#/$defs/identifier"
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

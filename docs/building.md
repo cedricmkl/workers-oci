@@ -135,7 +135,11 @@ everything.
 
 `modules` names files the script needs uploaded beyond its entry: WebAssembly,
 text and data blobs, and the `_headers` and `_redirects` files, which Cloudflare
-treats as modules rather than as files in the assets directory. `content_type` is
+treats as modules rather than as files in the assets directory. A module uploads
+under its path relative to the entry module's directory, except `_headers` and
+`_redirects`, which always upload under that bare name wherever they sit, because
+Cloudflare applies them only by that name. So `dist/client/_headers` beside an
+entry at `dist/worker/index.js` works. `content_type` is
 inferred from the extension when you leave it out. Chunks emitted next to the
 entry module are found without being listed, so this is for files a bundler did
 not write.

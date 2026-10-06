@@ -216,10 +216,21 @@ locals {
   # which is the wrong specifier AND collides with a real `dist/x/y.js`. An entry
   # at the layer root has `dirname` == "." and its siblings are already correctly
   # named, so nothing is stripped in that case.
+  #
+  # `_headers` and `_redirects` are the exception. The versions API reads them as
+  # static assets config only when the module is named exactly that, so they are
+  # named by their basename wherever they sit. A bundler that writes the worker
+  # and the assets into sibling directories (`dist/worker/index.js` beside
+  # `dist/client/_headers`) otherwise uploads `../client/_headers` under its full
+  # path, Cloudflare takes it as an ordinary text module, and every rule in it is
+  # silently ignored. Two of either for one worker collide on the name, which
+  # `duplicate_modules` refuses.
+  asset_config_modules = ["_headers", "_redirects"]
+
   modules = {
     for w in local.workers : w.name => [
       for m in concat([{ path = w.main }], try(w.modules, [])) : {
-        name = trimprefix(
+        name = contains(local.asset_config_modules, basename(m.path)) ? basename(m.path) : trimprefix(
           trimprefix(m.path, "./"),
           local.entry_dir[w.name] == "." ? "" : "${local.entry_dir[w.name]}/",
         )

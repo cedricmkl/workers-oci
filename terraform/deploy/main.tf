@@ -216,10 +216,18 @@ locals {
   # which is the wrong specifier AND collides with a real `dist/x/y.js`. An entry
   # at the layer root has `dirname` == "." and its siblings are already correctly
   # named, so nothing is stripped in that case.
+  #
+  # `_headers` and `_redirects` are the exception. Cloudflare reads them only
+  # when a module is named exactly that, wherever the bundler wrote the file, so
+  # they take their basename. Under an entry at `dist/slate/index.js` a rules file
+  # at `dist/client/_headers` otherwise went up as `dist/client/_headers`, a plain
+  # text module nothing read. The `duplicate_modules` check refuses two of either.
+  asset_config_modules = ["_headers", "_redirects"]
+
   modules = {
     for w in local.workers : w.name => [
       for m in concat([{ path = w.main }], try(w.modules, [])) : {
-        name = trimprefix(
+        name = contains(local.asset_config_modules, basename(m.path)) ? basename(m.path) : trimprefix(
           trimprefix(m.path, "./"),
           local.entry_dir[w.name] == "." ? "" : "${local.entry_dir[w.name]}/",
         )

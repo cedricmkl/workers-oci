@@ -136,7 +136,7 @@ everything.
 `modules` names files the script needs uploaded beyond its entry: WebAssembly,
 text and data blobs, and the `_headers` and `_redirects` files, which Cloudflare
 treats as modules rather than as files in the assets directory. `content_type` is
-inferred from the extension when you leave it out. Chunks emitted next to the
+inferred from the extension when you leave it out. `_headers` and `_redirects` are named by their basename wherever they sit (`dist/client/_headers` uploads as `_headers`), because Cloudflare reads only a module with exactly that name. Two of either in one worker is refused. Chunks emitted next to the
 entry module are found without being listed, so this is for files a bundler did
 not write.
 

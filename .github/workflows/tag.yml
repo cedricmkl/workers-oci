@@ -1,0 +1,66 @@
+# Cut a version of workers-oci: dispatch it on main with `version` and it checks
+# the tree, then creates the tag itself.
+#
+# THE WORKFLOW TAGS, NOT A PERSON. Consumers pin this repository by tag
+# (`workers-oci/build@v0.6.0`, `terraform/deploy?ref=v0.6.0`), and an agent
+# session can push a branch but not a tag, so the tag is pushed by the job with
+# the repository's own token. Same shape as the release workflow in Slate.
+#
+#   gh workflow run tag.yml -f version=v0.6.1
+#
+# An existing tag is never moved: a pin is forever once somebody has it.
+
+name: tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to tag, vMAJOR.MINOR.PATCH.
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Refuse a bad or taken version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not vX.Y.Z: $VERSION"; exit 1; }
+          if git rev-parse --quiet --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "$VERSION already exists and is never moved"; exit 1
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run build
+
+      - name: Tag the commit
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "$VERSION"
+          git push origin "refs/tags/$VERSION"
+          {
+            echo "## workers-oci \`$VERSION\` tagged"
+            echo
+            echo "\`$(git rev-parse HEAD)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
